@@ -33,326 +33,251 @@
 #include "tefkernel-cpp-wrapper/patchlib/field.hpp"
 #include "tefkernel-cpp-wrapper/patchlib/property.hpp"
 
-TEFKernel::PatchLib::Type::Type(const std::string &ns, const std::string &name)
-            : handle_(patchlib_type_get_type(ns.c_str(), name.c_str())), ownsHandle_(true) {
-    if (handle_ == nullptr) {
+#include <stdexcept>
+#include <vector>
+
+using TEFKernel::PatchLib::Field;
+using TEFKernel::PatchLib::Handle;
+using TEFKernel::PatchLib::Method;
+using TEFKernel::PatchLib::Property;
+using TEFKernel::PatchLib::Type;
+
+// ==================== Handle(const Type&) ====================
+// 视图语义：不接管所有权
+Handle::Handle(const Type &t) : _value(t._value), _own(false) {}
+
+// ==================== 构造 / 析构 ====================
+Type::Type(const std::string &ns, const std::string &name)
+    : Handle(patchlib_type_get_type(ns.c_str(), name.c_str()), true) {
+    if (_value == nullptr) {
         throw std::runtime_error("Failed to get type: " + ns + "." + name);
     }
 }
 
-TEFKernel::PatchLib::Type::~Type() {
-    if (ownsHandle_) ManualDestroy();
+Type::~Type() = default;   // Handle 析构负责释放
+
+void Type::ManualDestroy() {
+    Reset();   // Handle::Reset 会按 _own 释放并置空
 }
 
-void TEFKernel::PatchLib::Type::ManualDestroy() {
-    if (ownsHandle_ && handle_ != nullptr) {
-        patchlib_free(handle_);
-    }
-    Release();
-}
+// ==================== 拷贝 / 移动（全部委托给 Handle）====================
+Type::Type(const Type &other) : Handle(static_cast<const Handle &>(other)) {}
 
-TEFKernel::PatchLib::Type::Type(const Type &other)  : handle_(other.handle_), ownsHandle_(true) {
-    if (other.ownsHandle_ && other.handle_ != nullptr) {
-#if !defined(__ANDROID__)
-        handle_ = patchlib_handle_copy(other.handle_);
-        ownsHandle_ = true;
-#endif
-    }
-}
+Type &Type::operator=(const Type &other) = default;
 
-TEFKernel::PatchLib::Type &TEFKernel::PatchLib::Type::operator=(const Type &other) {
-    if (this != &other) {
-        Reset();
-        handle_ = other.handle_;
-        ownsHandle_ = false;
-        if (other.ownsHandle_ && other.handle_ != nullptr) {
-#if !defined(__ANDROID__)
-            handle_ = patchlib_handle_copy(other.handle_);
-            ownsHandle_ = true;
-#endif
-        }
-    }
+Type::Type(Type &&other) noexcept : Handle(std::move(static_cast<Handle &>(other))) {}
+
+Type &Type::operator=(Type &&other) noexcept {
+    Handle::operator=(std::move(static_cast<Handle &>(other)));
     return *this;
 }
 
-TEFKernel::PatchLib::Type::Type(Type &&other) noexcept
-            : handle_(other.handle_), ownsHandle_(other.ownsHandle_) {
-    other.handle_ = nullptr;
-    other.ownsHandle_ = false;
+// ==================== 状态 ====================
+bool Type::IsValid() const {
+    return patchlib_is_valid(_value);
 }
 
-TEFKernel::PatchLib::Type &TEFKernel::PatchLib::Type::operator=(Type &&other) noexcept {
-    if (this != &other) {
-        Reset();
-        handle_ = other.handle_;
-        ownsHandle_ = other.ownsHandle_;
-        other.handle_ = nullptr;
-        other.ownsHandle_ = false;
-    }
-    return *this;
+void Type::Reset(const Handle &newHandle, const bool takeOwnership) {
+    Handle::Reset(newHandle.Raw(), takeOwnership);
 }
 
-bool TEFKernel::PatchLib::Type::IsValid() const {
-    return patchlib_is_valid(handle_);
+Handle Type::Release() {
+    return Handle(Handle::Release(), _own);   // 注意顺序：先取 _own 再 Release
+}
+// 更稳妥的写法：
+// Handle Type::Release() {
+//     Handle h(_value, _own);
+//     _value = nullptr;
+//     _own   = false;
+//     return h;
+// }
+
+// ==================== 类型信息 ====================
+Handle Type::GetMonoType() const {
+#if defined(__ANDROID__)
+    return Handle(patchlib_type_get_mono_type(_value), false);
+#else
+    return Handle(_value, false);
+#endif
 }
 
-void TEFKernel::PatchLib::Type::Reset(patch_handle_t newHandle, const bool takeOwnership) {
-    if (ownsHandle_ && handle_ != nullptr) {
-        patchlib_free(handle_);
-    }
-    handle_ = newHandle;
-    ownsHandle_ = takeOwnership;
-}
-
-patch_handle_t TEFKernel::PatchLib::Type::Release() {
-    patch_handle_t h = handle_;
-    handle_ = nullptr;
-    ownsHandle_ = false;
-    return h;
-}
-
-patch_handle_t TEFKernel::PatchLib::Type::GetMonoType() const {
-    return patchlib_type_get_mono_type(handle_);
-}
-
-std::string TEFKernel::PatchLib::Type::GetName() const {
-    const char *name = patchlib_type_get_name(handle_);
+std::string Type::GetName() const {
+    const char *name = patchlib_type_get_name(_value);
     return name ? std::string(name) : std::string();
 }
 
-std::string TEFKernel::PatchLib::Type::GetNamespace() const {
-    const char *ns = patchlib_type_get_namespace(handle_);
+std::string Type::GetNamespace() const {
+    const char *ns = patchlib_type_get_namespace(_value);
     return ns ? std::string(ns) : std::string();
 }
 
-std::string TEFKernel::PatchLib::Type::GetFullName() const {
-    char *name = patchlib_type_get_full_name(handle_);
+std::string Type::GetFullName() const {
+    char *name = patchlib_type_get_full_name(_value);
     if (!name) return {};
     std::string result(name);
     free(name);
     return result;
 }
 
-TEFKernel::PatchLib::Type TEFKernel::PatchLib::Type::GetParent() const {
-    return Type(patchlib_type_get_parent(handle_), false);
+Type Type::GetParent() const {
+    return {Handle(patchlib_type_get_parent(_value), true)};
 }
 
-TEFKernel::PatchLib::Type TEFKernel::PatchLib::Type::GetBasicType(const patch_type_t basicType) {
-    return Type(patchlib_get_basic_type(basicType), false);
+Type Type::GetBasicType(const patch_type_t basicType) {
+    return {Handle(patchlib_get_basic_type(basicType), true)};
 }
 
-patch_handle_t TEFKernel::PatchLib::Type::NewInstance() const {
-    return patchlib_type_new_instance(handle_);
+Handle Type::NewInstance() const {
+    return Handle(patchlib_type_new_instance(_value), false);
 }
 
-TEFKernel::PatchLib::Type TEFKernel::PatchLib::Type::
-MakeGenericType(const Std::Vector<patch_handle_t> &typeArgs) const {
-    return Type(
-        patchlib_type_make_generic_type(
-            handle_,
-            typeArgs.getHandle()
-        ),
-        true
-    );
+Type Type::MakeGenericType(const Std::Vector<Handle> &typeArgs) const {
+    Std::Vector<patch_handle_t> raw;
+    raw.reserve(typeArgs.size());
+    for (const auto &h : typeArgs) raw.push_back(h.Raw());
+
+    return {Handle(patchlib_type_make_generic_type(_value, raw.getHandle()), true)};
 }
 
-TEFKernel::PatchLib::Type TEFKernel::PatchLib::Type::GetInnerType(const std::string &name) const {
-    return Type(patchlib_type_get_inner_type(handle_, name.c_str()), false);
+// ==================== 成员获取 ====================
+Type Type::GetInnerType(const std::string &name) const {
+    return {Handle(patchlib_type_get_inner_type(_value, name.c_str()), true)};
 }
 
-TEFKernel::PatchLib::Field TEFKernel::PatchLib::Type::GetField(const std::string &name) const {
-    return Field(patchlib_type_get_field(handle_, name.c_str()), false);
+Field Type::GetField(const std::string &name) const {
+    return {Handle(patchlib_type_get_field(_value, name.c_str()), true)};
 }
 
-TEFKernel::Std::Vector<TEFKernel::PatchLib::Field> TEFKernel::PatchLib::Type::GetFields(
-    const bool includingParent) const {
+Property Type::GetProperty(const std::string &name) const {
+    return {Handle(patchlib_type_get_property(_value, name.c_str()), true)};
+}
+
+Method Type::GetMethod(const std::string &name) const {
+    return {Handle(patchlib_type_get_method(_value, name.c_str()), true)};
+}
+
+Method Type::GetMethod(const std::string &name, const int argsCount) const {
+    return {
+        Handle(patchlib_type_get_method_by_param_count(_value, name.c_str(), argsCount), true)};
+}
+
+Method Type::GetMethod(const std::string &name,
+                       const Std::Vector<std::string> &argsNames) const {
+    std::vector<const char *> cStrings;
+    cStrings.reserve(argsNames.size());
+    for (const auto &s : argsNames) cStrings.push_back(s.c_str());
+
+    return {Handle(
+        patchlib_type_get_method_by_param_names(_value, name.c_str(),
+                                                static_cast<int>(argsNames.size()),
+                                                cStrings.data()),
+        true)};
+}
+
+Method Type::GetMethod(const std::string &name, const Std::Vector<Type> &argsTypes) const {
+    Std::Vector<patch_handle_t> handles;
+    handles.reserve(argsTypes.size());
+    for (const auto &type : argsTypes) handles.push_back(type.Raw());
+
+    return {Handle(
+        patchlib_type_get_method_by_param_types(_value, name.c_str(),
+                                                static_cast<int>(argsTypes.size()),
+                                                handles.data()),
+        true)};
+}
+
+Method Type::GetMethod(const std::string &name,
+                       const Std::Vector<Type> &argsTypes,
+                       const Std::Vector<std::string> &argsNames) const {
+    Std::Vector<patch_handle_t> handles;
+    handles.reserve(argsTypes.size());
+    for (const auto &type : argsTypes) handles.push_back(type.Raw());
+
+    std::vector<const char *> cStrings;
+    cStrings.reserve(argsNames.size());
+    for (const auto &s : argsNames) cStrings.push_back(s.c_str());
+
+    return {Handle(
+        patchlib_type_get_method_by_signature(_value, name.c_str(),
+                                              static_cast<int>(argsTypes.size()),
+                                              handles.data(), cStrings.data()),
+        true)};
+}
+
+// ==================== 批量 ====================
+TEFKernel::Std::Vector<Type> Type::GetInnerTypes(const bool includingParent) const {
     tefstd_vector_t vec;
-    if (!tefstd_vector_init(&vec, sizeof(patch_handle_t))) {
-        return {};
-    }
+    if (!tefstd_vector_init(&vec, sizeof(patch_handle_t))) return {};
 
-    if (patchlib_type_get_fields(handle_, includingParent, &vec)) {
-        Std::Vector<Field> result;
+    Std::Vector<Type> result;
+    if (patchlib_type_get_inner_types(_value, includingParent, &vec)) {
         const auto *data = static_cast<patch_handle_t *>(vec.data);
-        for (size_t i = 0; i < vec.size; ++i) {
-            result.push_back(Field(data[i], false));
-        }
-        tefstd_vector_destroy(&vec);
-        return result;
+        for (size_t i = 0; i < vec.size; ++i)
+            result.push_back(Type(Handle(data[i], true)));
     }
-
     tefstd_vector_destroy(&vec);
-    return {};
+    return result;
 }
 
-TEFKernel::Std::Vector<TEFKernel::PatchLib::Type> TEFKernel::PatchLib::Type::GetInnerTypes(
-    const bool includingParent) const {
+TEFKernel::Std::Vector<Field> Type::GetFields(const bool includingParent) const {
     tefstd_vector_t vec;
-    if (!tefstd_vector_init(&vec, sizeof(patch_handle_t))) {
-        return {};
-    }
+    if (!tefstd_vector_init(&vec, sizeof(patch_handle_t))) return {};
 
-    if (patchlib_type_get_inner_types(handle_, includingParent, &vec)) {
-        Std::Vector<Type> result;
+    Std::Vector<Field> result;
+    if (patchlib_type_get_fields(_value, includingParent, &vec)) {
         const auto *data = static_cast<patch_handle_t *>(vec.data);
-        for (size_t i = 0; i < vec.size; ++i) {
-            result.push_back(Type(data[i], false));
-        }
-        tefstd_vector_destroy(&vec);
-        return result;
+        for (size_t i = 0; i < vec.size; ++i)
+            result.push_back(Field(Handle(data[i], true)));
     }
-
     tefstd_vector_destroy(&vec);
-    return {};
+    return result;
 }
 
-
-// Type类中需要的方法实现
-TEFKernel::PatchLib::Property TEFKernel::PatchLib::Type::GetProperty(const std::string &name) const {
-    return Property(patchlib_type_get_property(handle_, name.c_str()), false);
-}
-
-TEFKernel::Std::Vector<TEFKernel::PatchLib::Property> TEFKernel::PatchLib::Type::GetProperties(
-    const bool includingParent) const {
+TEFKernel::Std::Vector<Property> Type::GetProperties(const bool includingParent) const {
     tefstd_vector_t vec;
-    if (!tefstd_vector_init(&vec, sizeof(patch_handle_t))) {
-        return {};
-    }
+    if (!tefstd_vector_init(&vec, sizeof(patch_handle_t))) return {};
 
-    if (patchlib_type_get_properties(handle_, includingParent, &vec)) {
-        Std::Vector<Property> result;
+    Std::Vector<Property> result;
+    if (patchlib_type_get_properties(_value, includingParent, &vec)) {
         const auto *data = static_cast<patch_handle_t *>(vec.data);
-        for (size_t i = 0; i < vec.size; ++i) {
-            result.push_back(Property(data[i], false));
-        }
-        tefstd_vector_destroy(&vec);
-        return result;
+        for (size_t i = 0; i < vec.size; ++i)
+            result.push_back(Property(Handle(data[i], true)));
     }
-
     tefstd_vector_destroy(&vec);
-    return {};
+    return result;
 }
 
-bool TEFKernel::PatchLib::Type::operator==(const Type &other) const {
-    return patchlib_type_is_same(handle_, other.handle_);
+TEFKernel::Std::Vector<Method> Type::GetMethods(const bool includingParent) const {
+    tefstd_vector_t vec;
+    if (!tefstd_vector_init(&vec, sizeof(patch_handle_t))) return {};
+
+    Std::Vector<Method> result;
+    if (patchlib_type_get_methods(_value, includingParent, &vec)) {
+        const auto *data = static_cast<patch_handle_t *>(vec.data);
+        for (size_t i = 0; i < vec.size; ++i)
+            result.push_back(Method(Handle(data[i], true)));
+    }
+    tefstd_vector_destroy(&vec);
+    return result;
 }
 
-bool TEFKernel::PatchLib::Type::operator!=(const Type &other) const {
+// ==================== 运算符 ====================
+bool Type::operator==(const Type &other) const {
+    return patchlib_type_is_same(_value, other._value);
+}
+
+bool Type::operator!=(const Type &other) const {
     return !(*this == other);
 }
 
-TEFKernel::PatchLib::Type::operator bool() const {
+Type::operator bool() const {
     return IsValid();
 }
 
-bool TEFKernel::PatchLib::Type::operator==(patch_handle_t other) const {
-    return patchlib_type_is_same(handle_, other);
+bool Type::operator==(const Handle &other) const {
+    return patchlib_type_is_same(_value, other.Raw());
 }
 
-bool TEFKernel::PatchLib::Type::operator!=(patch_handle_t other) const {
+bool Type::operator!=(const Handle &other) const {
     return !(*this == other);
-}
-
-
-// Type类中需要的方法实现
-TEFKernel::PatchLib::Method TEFKernel::PatchLib::Type::GetMethod(const std::string &name) const {
-    return Method(patchlib_type_get_method(handle_, name.c_str()), false);
-}
-
-TEFKernel::PatchLib::Method TEFKernel::PatchLib::Type::GetMethod(const std::string &name, const int argsCount) const {
-    return Method(patchlib_type_get_method_by_param_count(handle_, name.c_str(), argsCount), false);
-}
-
-TEFKernel::PatchLib::Method TEFKernel::PatchLib::Type::GetMethod(
-    const std::string &name,
-    const Std::Vector<std::string> &argsNames
-) const {
-    // 构建C字符串数组
-    std::vector<const char *> cStrings;
-    cStrings.reserve(argsNames.size());
-    for (const auto &s: argsNames) {
-        cStrings.push_back(s.c_str());
-    }
-    return Method(
-        patchlib_type_get_method_by_param_names(
-            handle_,
-            name.c_str(),
-            static_cast<int>(argsNames.size()),
-            cStrings.data()
-        ),
-        false
-    );
-}
-
-TEFKernel::PatchLib::Method TEFKernel::PatchLib::Type::GetMethod(
-    const std::string &name,
-    const Std::Vector<Type> &argsTypes
-) const {
-    // 构建句柄数组
-    Std::Vector<patch_handle_t> handles;
-    handles.reserve(argsTypes.size());
-    for (const auto &type: argsTypes) {
-        handles.push_back(type.GetHandle());
-    }
-    return Method(
-        patchlib_type_get_method_by_param_types(
-            handle_,
-            name.c_str(),
-            static_cast<int>(argsTypes.size()),
-            handles.data()
-        ),
-        false
-    );
-}
-
-TEFKernel::PatchLib::Method TEFKernel::PatchLib::Type::GetMethod(
-    const std::string &name,
-    const Std::Vector<Type> &argsTypes,
-    const Std::Vector<std::string> &argsNames
-) const {
-    // 构建句柄数组
-    Std::Vector<patch_handle_t> handles;
-    handles.reserve(argsTypes.size());
-    for (const auto &type: argsTypes) {
-        handles.push_back(type.GetHandle());
-    }
-
-    // 构建C字符串数组
-    std::vector<const char *> cStrings;
-    cStrings.reserve(argsNames.size());
-    for (const auto &s: argsNames) {
-        cStrings.push_back(s.c_str());
-    }
-
-    return Method(
-        patchlib_type_get_method_by_signature(
-            handle_,
-            name.c_str(),
-            static_cast<int>(argsTypes.size()),
-            handles.data(),
-            cStrings.data()
-        ),
-        false
-    );
-}
-
-TEFKernel::Std::Vector<TEFKernel::PatchLib::Method> TEFKernel::PatchLib::Type::GetMethods(
-    const bool includingParent) const {
-    tefstd_vector_t vec;
-    if (!tefstd_vector_init(&vec, sizeof(patch_handle_t))) {
-        return {};
-    }
-
-    if (patchlib_type_get_methods(handle_, includingParent, &vec)) {
-        Std::Vector<Method> result;
-        const auto *data = static_cast<patch_handle_t *>(vec.data);
-        for (size_t i = 0; i < vec.size; ++i) {
-            result.push_back(Method(data[i], false));
-        }
-        tefstd_vector_destroy(&vec);
-        return result;
-    }
-
-    tefstd_vector_destroy(&vec);
-    return {};
 }

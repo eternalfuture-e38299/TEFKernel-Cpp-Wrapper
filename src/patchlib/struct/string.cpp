@@ -30,161 +30,80 @@
 
 #include "tefkernel-cpp-wrapper/patchlib/struct/string.hpp"
 
-TEFKernel::PatchLib::Struct::String::String(const char *str)
-            : handle_(nullptr), ownsHandle_(true) {
-    handle_ = patchlib_string_create(str);
-    if (handle_ == nullptr) {
+#include <cstdlib>
+#include <stdexcept>
+
+using TEFKernel::PatchLib::Handle;
+using TEFKernel::PatchLib::Struct::String;
+
+// ==================== 构造 / 赋值 ====================
+String::String(const char *str) : Handle() {
+    _value = patchlib_string_create(str);
+    _own   = true;
+    if (_value == nullptr) {
         throw std::runtime_error("Failed to create string");
     }
 }
 
-TEFKernel::PatchLib::Struct::String::~String()  {
-    if (ownsHandle_ && handle_ != nullptr) {
-#if !defined(__ANDROID__)
-        patchlib_free(handle_);
-#endif
-    }
-}
-
-TEFKernel::PatchLib::Struct::String::String(const String &other)  : handle_(other.handle_), ownsHandle_(false) {
-    if (other.ownsHandle_ && other.handle_ != nullptr) {
-#if !defined(__ANDROID__)
-        handle_ = patchlib_handle_copy(other.handle_);
-        ownsHandle_ = true;
-#endif
-    }
-}
-
-TEFKernel::PatchLib::Struct::String & TEFKernel::PatchLib::Struct::String::operator=(const String &other) {
-    if (this != &other) {
-        Reset();
-        handle_ = other.handle_;
-        ownsHandle_ = false;
-        if (other.ownsHandle_ && other.handle_ != nullptr) {
-#if !defined(__ANDROID__)
-            handle_ = patchlib_handle_copy(other.handle_);
-            ownsHandle_ = true;
-#endif
-        }
-    }
-    return *this;
-}
-
-TEFKernel::PatchLib::Struct::String::String(String &&other) noexcept
-            : handle_(other.handle_), ownsHandle_(other.ownsHandle_) {
-    other.handle_ = nullptr;
-    other.ownsHandle_ = false;
-}
-
-TEFKernel::PatchLib::Struct::String & TEFKernel::PatchLib::Struct::String::operator=(String &&other) noexcept {
-    if (this != &other) {
-        Reset();
-        handle_ = other.handle_;
-        ownsHandle_ = other.ownsHandle_;
-        other.handle_ = nullptr;
-        other.ownsHandle_ = false;
-    }
-    return *this;
-}
-
-TEFKernel::PatchLib::Struct::String & TEFKernel::PatchLib::Struct::String::operator=(const char *str) {
+String &String::operator=(const char *str) {
     Reset();
-    handle_ = patchlib_string_create(str);
-    ownsHandle_ = true;
-    if (handle_ == nullptr) {
+    _value = patchlib_string_create(str);
+    _own   = true;
+    if (_value == nullptr) {
         throw std::runtime_error("Failed to create string");
     }
     return *this;
 }
 
-TEFKernel::PatchLib::Struct::String & TEFKernel::PatchLib::Struct::String::operator=(const std::string &str) {
-    return *this = str.c_str();
-}
-
-bool TEFKernel::PatchLib::Struct::String::IsValid() const {
-    return patchlib_is_valid(handle_);
-}
-
-void TEFKernel::PatchLib::Struct::String::Reset(patch_handle_t newHandle, const bool takeOwnership) {
-    if (ownsHandle_ && handle_ != nullptr) {
-#if !defined(__ANDROID__)
-        patchlib_free(handle_);
-#endif
-    }
-    handle_ = newHandle;
-    ownsHandle_ = takeOwnership;
-}
-
-patch_handle_t TEFKernel::PatchLib::Struct::String::Release() {
-    patch_handle_t h = handle_;
-    handle_ = nullptr;
-    ownsHandle_ = false;
-    return h;
-}
-
-std::unique_ptr<char, decltype(&free)> TEFKernel::PatchLib::Struct::String::CStr() const {
-    char *str = patchlib_string_cstr(handle_);
-    // 使用大括号初始化列表，避免重复返回类型
+// ==================== 字符串操作 ====================
+std::unique_ptr<char, decltype(&free)> String::CStr() const {
+    char *str = patchlib_string_cstr(_value);
     return {str, free};
 }
 
-std::string TEFKernel::PatchLib::Struct::String::ToString() const  {
+std::string String::ToString() const {
     const auto cstrPtr = CStr();
     return cstrPtr ? std::string(cstrPtr.get()) : std::string();
 }
 
-size_t TEFKernel::PatchLib::Struct::String::Length() const {
-    return patchlib_string_length(handle_);
+size_t String::Length() const {
+    return patchlib_string_length(_value);
 }
 
-bool TEFKernel::PatchLib::Struct::String::Empty() const {
-    return patchlib_string_empty(handle_);
+bool String::Empty() const {
+    return patchlib_string_empty(_value);
 }
 
-TEFKernel::PatchLib::Struct::String::operator bool() const {
-    return IsValid() && !Empty();
-}
-
-bool TEFKernel::PatchLib::Struct::String::operator==(const String &other) const {
+// ==================== 比较 ====================
+bool String::operator==(const String &other) const {
     return ToString() == other.ToString();
 }
 
-bool TEFKernel::PatchLib::Struct::String::operator==(const char *str) const {
+bool String::operator==(const char *str) const {
     return ToString() == str;
 }
 
-bool TEFKernel::PatchLib::Struct::String::operator==(const std::string &str) const {
+bool String::operator==(const std::string &str) const {
     return ToString() == str;
 }
 
-bool TEFKernel::PatchLib::Struct::String::operator!=(const String &other) const {
-    return !(*this == other);
-}
-
-bool TEFKernel::PatchLib::Struct::String::operator!=(const char *str) const {
-    return !(*this == str);
-}
-
-bool TEFKernel::PatchLib::Struct::String::operator!=(const std::string &str) const {
-    return !(*this == str);
-}
-
-bool TEFKernel::PatchLib::Struct::String::operator<(const String &other) const {
+bool String::operator<(const String &other) const {
     return ToString() < other.ToString();
 }
 
-bool TEFKernel::PatchLib::Struct::String::operator>(const String &other) const {
+bool String::operator>(const String &other) const {
     return ToString() > other.ToString();
 }
 
-bool TEFKernel::PatchLib::Struct::String::operator<=(const String &other) const {
+bool String::operator<=(const String &other) const {
     return ToString() <= other.ToString();
 }
 
-bool TEFKernel::PatchLib::Struct::String::operator>=(const String &other) const {
+bool String::operator>=(const String &other) const {
     return ToString() >= other.ToString();
 }
 
+// ==================== 友元 ====================
 bool TEFKernel::PatchLib::Struct::operator==(const char *lhs, const String &rhs) {
     return rhs == lhs;
 }

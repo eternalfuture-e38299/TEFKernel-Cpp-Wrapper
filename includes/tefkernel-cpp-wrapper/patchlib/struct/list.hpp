@@ -30,285 +30,136 @@
 
 #pragma once
 
-#include "tefkernel/patchlib/struct/list.h"
-#include "../type.hpp"
 #include "array.hpp"
-#include <vector>
+#include "tefkernel/patchlib/struct/list.h"
+
+#include <stdexcept>
 #include <type_traits>
+#include <vector>
 
 namespace TEFKernel::PatchLib::Struct {
-    /**
-     * @brief 列表包装类
-     *
-     * 提供对C API中列表操作的C++封装
-     *
-     * @tparam T 元素类型
-     */
+
     template<typename T>
-    class List {
-    public:
-        /**
-         * @brief 默认构造函数
-         */
-        List() : handle_(nullptr), ownsHandle_(false) {
-        }
+    struct List : Handle {
+        List() = default;
 
-        /**
-         * @brief 从已有句柄构造
-         */
-        explicit List(patch_handle_t handle, const bool takeOwnership = false)
-            : handle_(handle), ownsHandle_(takeOwnership) {
-        }
+        List(const Handle &h) : Handle(h) {}
+        explicit List(const Handle &h, const bool takeOwnership) : Handle(h.Raw(), takeOwnership) {}
 
-        /**
-         * @brief 创建列表
-         * @param capacity 初始容量
-         * @param type 元素类型句柄（可选）
-         */
-        explicit List(const size_t capacity, patch_handle_t type = nullptr)
-            : handle_(nullptr), ownsHandle_(true) {
-            if (type == nullptr) {
-                type = Type::GetBasicType(GetPatchType()).GetHandle();
+        explicit List(const size_t capacity, Handle type = {}) : Handle() {
+            if (type.Raw() == nullptr) {
+                type = Type::GetBasicType(GetPatchType());
             }
-            handle_ = patchlib_list_create(capacity, type);
-            if (handle_ == nullptr) {
+            _value = patchlib_list_create(capacity, type.Raw());
+            _own   = true;
+            if (_value == nullptr) {
                 throw std::runtime_error("Failed to create list");
             }
         }
 
-        /**
-         * @brief 从std::vector创建
-         */
-        explicit List(const std::vector<T> &vec, patch_handle_t type = nullptr)
-            : List(vec.size(), type) {
-            for (const auto &elem: vec) {
-                add(elem);
-            }
+        explicit List(const std::vector<T> &vec, Handle type = {}) : List(vec.size(), type) {
+            for (const auto &elem : vec) add(elem);
         }
 
-        /**
-         * @brief 从Array复制创建
-         */
-        explicit List(const Array<T> &array, patch_handle_t type = nullptr)
-            : List(array.length(), type) {
-            if (!patchlib_list_copy_from(handle_, array.getHandle())) {
+        explicit List(const Array<T> &array, Handle type = {}) : List(array.Length(), type) {
+            if (!patchlib_list_copy_from(_value, array.Raw())) {
                 throw std::runtime_error("Failed to copy from array");
             }
         }
 
-        /**
-         * @brief 析构函数
-         */
-        ~List() {
-            if (ownsHandle_ && handle_ != nullptr) {
-#if !defined(__ANDROID__)
-                patchlib_free(handle_);
-#endif
-            }
-        }
+        ~List() = default;
 
-        // 拷贝构造
-        List(const List &other) : handle_(other.handle_), ownsHandle_(false) {
-            if (other.ownsHandle_ && other.handle_ != nullptr) {
-#if !defined(__ANDROID__)
-                handle_ = patchlib_handle_copy(other.handle_);
-                ownsHandle_ = true;
-#endif
-            }
-        }
+        List(const List &other) : Handle(static_cast<const Handle &>(other)) {}
 
-        // 拷贝赋值
         List &operator=(const List &other) {
             if (this != &other) {
-                Reset();
-                handle_ = other.handle_;
-                ownsHandle_ = false;
-                if (other.ownsHandle_ && other.handle_ != nullptr) {
-#if !defined(__ANDROID__)
-                    handle_ = patchlib_handle_copy(other.handle_);
-                    ownsHandle_ = true;
-#endif
-                }
+                Handle::operator=(static_cast<const Handle &>(other));
             }
             return *this;
         }
 
-        // 移动构造
-        List(List &&other) noexcept
-            : handle_(other.handle_), ownsHandle_(other.ownsHandle_) {
-            other.handle_ = nullptr;
-            other.ownsHandle_ = false;
-        }
+        List(List &&other) noexcept : Handle(std::move(static_cast<Handle &>(other))) {}
 
-        // 移动赋值
         List &operator=(List &&other) noexcept {
             if (this != &other) {
-                Reset();
-                handle_ = other.handle_;
-                ownsHandle_ = other.ownsHandle_;
-                other.handle_ = nullptr;
-                other.ownsHandle_ = false;
+                Handle::operator=(std::move(static_cast<Handle &>(other)));
             }
             return *this;
         }
 
-        /**
-         * @brief 获取原始句柄
-         */
-        [[nodiscard]] patch_handle_t GetHandle() const { return handle_; }
+        [[nodiscard]] bool IsValid() const { return patchlib_is_valid(_value); }
 
-        /**
-         * @brief 检查是否有效
-         */
-        [[nodiscard]] bool IsValid() const {
-            return patchlib_is_valid(handle_);
+        void Reset(const Handle &newHandle = {}, const bool takeOwnership = false) {
+            Handle::Reset(newHandle.Raw(), takeOwnership);
         }
 
-        /**
-         * @brief 重置句柄
-         */
-        void Reset(patch_handle_t newHandle = nullptr, const bool takeOwnership = false) {
-            if (ownsHandle_ && handle_ != nullptr) {
-#if !defined(__ANDROID__)
-                patchlib_free(handle_);
-#endif
-            }
-            handle_ = newHandle;
-            ownsHandle_ = takeOwnership;
-        }
-
-        /**
-         * @brief 释放所有权
-         */
-        patch_handle_t Release() {
-            patch_handle_t h = handle_;
-            handle_ = nullptr;
-            ownsHandle_ = false;
+        Handle Release() {
+            Handle h(_value, _own);
+            _value = nullptr;
+            _own   = false;
             return h;
         }
 
         // ==================== 元素操作 ====================
-
-        /**
-         * @brief 添加元素
-         */
-        void add(const T &value) {
-            if (!patchlib_list_add(handle_, const_cast<void *>(static_cast<const void *>(&value)))) {
-                throw std::runtime_error("Failed to add element to list");
+        void Add(const T &value) {
+            if constexpr (std::is_same_v<T, Handle>) {
+                patch_handle_t raw = value.Raw();
+                if (!patchlib_list_add(_value, &raw)) {
+                    throw std::runtime_error("Failed to add element to list");
+                }
+            } else {
+                if (!patchlib_list_add(_value,
+                                       const_cast<void *>(static_cast<const void *>(&value)))) {
+                    throw std::runtime_error("Failed to add element to list");
+                                       }
             }
         }
 
-        /**
-         * @brief 移除元素
-         */
-        bool remove(const T &value) {
-            return patchlib_list_remove(handle_, const_cast<void *>(static_cast<const void *>(&value)));
+        bool Remove(const T &value) {
+            if constexpr (std::is_same_v<T, Handle>) {
+                patch_handle_t raw = value.Raw();
+                return patchlib_list_remove(_value, &raw);
+            } else {
+                return patchlib_list_remove(_value,
+                                            const_cast<void *>(static_cast<const void *>(&value)));
+            }
         }
 
-        /**
-         * @brief 移除指定索引的元素
-         * @throws std::out_of_range 如果索引越界
-         */
-        void removeAt(const size_t index) const {
-            if (!patchlib_list_remove_at(handle_, index)) {
+        void RemoveAt(const size_t index) const {
+            if (!patchlib_list_remove_at(_value, index)) {
                 throw std::out_of_range("List index out of bounds");
             }
         }
 
-        /**
-         * @brief 清空列表
-         */
-        void clear() const {
-            if (!patchlib_list_clear(handle_)) {
+        void Clear() const {
+            if (!patchlib_list_clear(_value)) {
                 throw std::runtime_error("Failed to clear list");
             }
         }
 
         // ==================== 容量 ====================
-
-        /**
-         * @brief 获取长度
-         */
-        [[nodiscard]] size_t length() const {
-            return getArray().length();
-        }
-
-        /**
-         * @brief 判断是否为空
-         */
-        [[nodiscard]] bool empty() const {
-            return length() == 0;
-        }
-
-        /**
-         * @brief 获取大小（同length）
-         */
-        [[nodiscard]] size_t size() const {
-            return length();
-        }
+        [[nodiscard]] size_t Length() const { return GetArray().Length(); }
+        [[nodiscard]] bool Empty() const { return Length() == 0; }
+        [[nodiscard]] size_t Size() const { return Length(); }
 
         // ==================== 转换 ====================
-
-        /**
-         * @brief 获取内部数组
-         */
-        Array<T> getArray() const {
-            return Array<T>(patchlib_list_get_array(handle_), false);
+        Array<T> GetArray() const {
+            return Array<T>(Handle(patchlib_list_get_array(_value), true));
         }
 
-        /**
-         * @brief 转换为std::vector
-         */
-        std::vector<T> toStdVector() const {
-            Array<T> arr = getArray();
-            return arr.toStdVector();
-        }
+        std::vector<T> toStdVector() const { return GetArray().ToStdVector(); }
 
-        // ==================== 迭代器支持 ====================
-
-        /**
-         * @brief 简单迭代器
-         */
+        // ==================== 迭代器 ====================
         class Iterator {
         public:
-            Iterator(List *list, const size_t index) : list_(list), index_(index) {
-            }
-
-            Iterator &operator++() {
-                ++index_;
-                return *this;
-            }
-
-            Iterator operator++(int) {
-                Iterator tmp = *this;
-                ++(*this);
-                return tmp;
-            }
-
-            Iterator &operator--() {
-                --index_;
-                return *this;
-            }
-
-            Iterator operator--(int) {
-                Iterator tmp = *this;
-                --(*this);
-                return tmp;
-            }
-
-            T &operator*() {
-                Array<T> arr = list_->getArray();
-                return const_cast<T &>(arr[index_]);
-            }
-
-            bool operator==(const Iterator &other) const {
-                return list_ == other.list_ && index_ == other.index_;
-            }
-
-            bool operator!=(const Iterator &other) const {
-                return !(*this == other);
-            }
-
+            Iterator(List *list, const size_t index) : list_(list), index_(index) {}
+            Iterator &operator++() { ++index_; return *this; }
+            Iterator operator++(int) { Iterator t = *this; ++(*this); return t; }
+            Iterator &operator--() { --index_; return *this; }
+            Iterator operator--(int) { Iterator t = *this; --(*this); return t; }
+            T operator*() const { return list_->GetArray()[index_]; }
+            bool operator==(const Iterator &o) const { return list_ == o.list_ && index_ == o.index_; }
+            bool operator!=(const Iterator &o) const { return !(*this == o); }
         private:
             List *list_;
             size_t index_;
@@ -316,75 +167,40 @@ namespace TEFKernel::PatchLib::Struct {
 
         class ConstIterator {
         public:
-            ConstIterator(const List *list, const size_t index) : list_(list), index_(index) {
-            }
-
-            ConstIterator &operator++() {
-                ++index_;
-                return *this;
-            }
-
-            ConstIterator operator++(int) {
-                ConstIterator tmp = *this;
-                ++(*this);
-                return tmp;
-            }
-
-            ConstIterator &operator--() {
-                --index_;
-                return *this;
-            }
-
-            ConstIterator operator--(int) {
-                ConstIterator tmp = *this;
-                --(*this);
-                return tmp;
-            }
-
-            const T &operator*() {
-                Array<T> arr = list_->getArray();
-                return arr[index_];
-            }
-
-            bool operator==(const ConstIterator &other) const {
-                return list_ == other.list_ && index_ == other.index_;
-            }
-
-            bool operator!=(const ConstIterator &other) const {
-                return !(*this == other);
-            }
-
+            ConstIterator(const List *list, const size_t index) : list_(list), index_(index) {}
+            ConstIterator &operator++() { ++index_; return *this; }
+            ConstIterator operator++(int) { ConstIterator t = *this; ++(*this); return t; }
+            ConstIterator &operator--() { --index_; return *this; }
+            ConstIterator operator--(int) { ConstIterator t = *this; --(*this); return t; }
+            T operator*() const { return list_->GetArray()[index_]; }
+            bool operator==(const ConstIterator &o) const { return list_ == o.list_ && index_ == o.index_; }
+            bool operator!=(const ConstIterator &o) const { return !(*this == o); }
         private:
             const List *list_;
             size_t index_;
         };
 
         Iterator Begin() { return Iterator(this, 0); }
-        Iterator End() { return Iterator(this, length()); }
+        Iterator End() { return Iterator(this, Length()); }
         ConstIterator Begin() const { return ConstIterator(this, 0); }
-        ConstIterator End() const { return ConstIterator(this, length()); }
+        ConstIterator End() const { return ConstIterator(this, Length()); }
         ConstIterator CBegin() const { return ConstIterator(this, 0); }
-        ConstIterator CEnd() const { return ConstIterator(this, length()); }
+        ConstIterator CEnd() const { return ConstIterator(this, Length()); }
 
         // ==================== 运算符 ====================
-
-        explicit operator bool() const {
-            return IsValid();
-        }
+        explicit operator bool() const { return IsValid(); }
 
         bool operator==(const List &other) const {
-            if (length() != other.length()) return false;
-            Array<T> arr1 = getArray();
-            Array<T> arr2 = other.getArray();
-            for (size_t i = 0; i < length(); ++i) {
-                if (arr1[i] != arr2[i]) return false;
+            if (Length() != other.Length()) return false;
+            Array<T> a1 = GetArray();
+            Array<T> a2 = other.GetArray();
+            for (size_t i = 0; i < Length(); ++i) {
+                if (a1[i] != a2[i]) return false;
             }
             return true;
         }
 
-        bool operator!=(const List &other) const {
-            return !(*this == other);
-        }
+        bool operator!=(const List &other) const { return !(*this == other); }
 
     private:
         static patch_type_t GetPatchType() {
@@ -403,8 +219,5 @@ namespace TEFKernel::PatchLib::Struct {
             else if constexpr (std::is_same_v<T, char>) return PATCH_CHAR;
             else return PATCH_OBJECT;
         }
-
-        patch_handle_t handle_;
-        bool ownsHandle_;
     };
 }

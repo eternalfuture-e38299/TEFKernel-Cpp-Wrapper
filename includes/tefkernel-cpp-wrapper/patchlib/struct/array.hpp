@@ -30,297 +30,230 @@
 
 #pragma once
 
-#include <vector>
-#include <type_traits>
-#include <stdexcept>
+#include <cstdint>
 
-#include "tefkernel/patchlib/struct/array.h"
 #include "../type.hpp"
+#include "tefkernel/patchlib/struct/array.h"
+
+#include <initializer_list>
+#include <stdexcept>
+#include <type_traits>
+#include <vector>
+
+namespace TEFKernel::PatchLib::Struct::detail {
+
+    // 读：T 从 void* 槽位读出
+    template<typename T>
+    T ReadSlot(const void *slot) {
+        if constexpr (std::is_same_v<T, Handle>) {
+            return Handle(*static_cast<const patch_handle_t *>(slot), true);  // 视图
+        } else {
+            return *static_cast<const T *>(slot);
+        }
+    }
+
+    // 写：把 T 写入 void* 槽位
+    template<typename T>
+    void WriteSlot(void *slot, const T &value) {
+        if constexpr (std::is_same_v<T, Handle>) {
+            *static_cast<patch_handle_t *>(slot) = value.Raw();
+        } else {
+            *static_cast<T *>(slot) = value;
+        }
+    }
+
+}
 
 namespace TEFKernel::PatchLib::Struct {
 
-    /**
-     * @brief 数组包装类
-     *
-     * 提供对C API中数组操作的C++封装
-     *
-     * @tparam T 元素类型
-     */
     template<typename T>
-    class Array {
-    public:
-        /**
-         * @brief 默认构造函数
-         */
-        Array() : Handle_(nullptr), OwnsHandle_(false) {
-        }
+    struct Array : Handle {
+        Array() = default;
 
-        /**
-         * @brief 从已有句柄构造
-         * @param handle 数组句柄
-         * @param takeOwnership 是否取得所有权
-         */
-        explicit Array(patch_handle_t handle, const bool takeOwnership = false)
-            : Handle_(handle), OwnsHandle_(takeOwnership) {
-        }
+        Array(const Handle &h) : Handle(h) {}                                 // 视图
+        explicit Array(const Handle &h, const bool takeOwnership)
+            : Handle(h.Raw(), takeOwnership) {}                               // 显式接管
 
-        /**
-         * @brief 创建数组
-         * @param size 数组大小
-         * @param type 元素类型句柄（可选，如果不提供则自动推断）
-         */
-        explicit Array(const size_t size, patch_handle_t type = nullptr)
-            : Handle_(nullptr), OwnsHandle_(true) {
-            if (type == nullptr) {
-                // 尝试自动推断类型
-                type = Type::GetBasicType(GetPatchType()).GetHandle();
+        explicit Array(const size_t size, Handle type = {}) : Handle() {
+            if (type.Raw() == nullptr) {
+                type = Type::GetBasicType(GetPatchType());
             }
-            Handle_ = patchlib_array_create(size, type);
-            if (Handle_ == nullptr) {
+            _value = patchlib_array_create(size, type.Raw());
+            _own   = true;
+            if (_value == nullptr) {
                 throw std::runtime_error("Failed to create array");
             }
         }
 
-        /**
-         * @brief 从C数组创建
-         * @param data C数组数据
-         * @param size 元素个数
-         * @param type 元素类型句柄
-         */
-        Array(const T *data, const size_t size, patch_handle_t type = nullptr)
-            : Array(size, type) {
-            if (!patchlib_array_copy_from_c(Handle_, data, size)) {
-                throw std::runtime_error("Failed to copy from C array");
-            }
-            OwnsHandle_ = true;
-        }
-
-        /**
-         * @brief 从std::vector创建
-         */
-        explicit Array(const std::vector<T> &vec, patch_handle_t type = nullptr)
-            : Array(vec.data(), vec.size(), type) {
-        }
-
-        /**
-         * @brief 析构函数
-         */
-        ~Array() {
-            if (OwnsHandle_ && Handle_ != nullptr) {
-#if !defined(__ANDROID__)
-                patchlib_free(Handle_);
-#endif
-            }
-        }
-
-        // 拷贝构造
-        Array(const Array &other) : Handle_(other.Handle_), OwnsHandle_(false) {
-            if (other.OwnsHandle_ && other.Handle_ != nullptr) {
-#if !defined(__ANDROID__)
-                Handle_ = patchlib_handle_copy(other.Handle_);
-                OwnsHandle_ = true;
-#endif
-            }
-        }
-
-        // 拷贝赋值
-        Array &operator=(const Array &other) {
-            if (this != &other) {
-                Reset();
-                Handle_ = other.Handle_;
-                OwnsHandle_ = false;
-                if (other.OwnsHandle_ && other.Handle_ != nullptr) {
-#if !defined(__ANDROID__)
-                    Handle_ = patchlib_handle_copy(other.Handle_);
-                    OwnsHandle_ = true;
-#endif
+        Array(const T *data, size_t size, Handle type = {}) : Array(size, type) {
+            if constexpr (std::is_same_v<T, Handle>) {
+                std::vector<patch_handle_t> raw(size, nullptr);
+                for (size_t i = 0; i < size; ++i) raw[i] = data[i].Raw();
+                if (!patchlib_array_copy_from_c(_value, raw.data(), size)) {
+                    throw std::runtime_error("Failed to copy from C array");
+                }
+            } else {
+                if (!patchlib_array_copy_from_c(_value, data, size)) {
+                    throw std::runtime_error("Failed to copy from C array");
                 }
             }
+        }
+
+        explicit Array(const std::vector<T> &vec, Handle type = {})
+            : Array(vec.data(), vec.size(), type) {}
+
+        ~Array() = default;
+
+        Array(const Array &other) : Handle(static_cast<const Handle &>(other)) {}
+
+        Array &operator=(const Array &other) {
+            if (this != &other) {
+                Handle::operator=(static_cast<const Handle &>(other));
+            }
             return *this;
         }
 
-        // 移动构造
-        Array(Array &&other) noexcept
-            : Handle_(other.Handle_), OwnsHandle_(other.OwnsHandle_) {
-            other.Handle_ = nullptr;
-            other.OwnsHandle_ = false;
-        }
+        Array(Array &&other) noexcept : Handle(std::move(static_cast<Handle &>(other))) {}
 
-        // 移动赋值
         Array &operator=(Array &&other) noexcept {
             if (this != &other) {
-                Reset();
-                Handle_ = other.Handle_;
-                OwnsHandle_ = other.OwnsHandle_;
-                other.Handle_ = nullptr;
-                other.OwnsHandle_ = false;
+                Handle::operator=(std::move(static_cast<Handle &>(other)));
             }
             return *this;
         }
 
-        /**
-         * @brief 获取原始句柄
-         */
-        [[nodiscard]] patch_handle_t GetHandle() const { return Handle_; }
+        [[nodiscard]] bool IsValid() const { return patchlib_is_valid(_value); }
 
-        /**
-         * @brief 检查是否有效
-         */
-        [[nodiscard]] bool IsValid() const {
-            return patchlib_is_valid(Handle_);
+        void Reset(const Handle &newHandle = {}, const bool takeOwnership = false) {
+            Handle::Reset(newHandle.Raw(), takeOwnership);
         }
 
-        /**
-         * @brief 重置句柄
-         */
-        void Reset(patch_handle_t newHandle = nullptr, const bool takeOwnership = false) {
-            if (OwnsHandle_ && Handle_ != nullptr) {
-#if !defined(__ANDROID__)
-                patchlib_free(Handle_);
-#endif
-            }
-            Handle_ = newHandle;
-            OwnsHandle_ = takeOwnership;
-        }
-
-        /**
-         * @brief 释放所有权
-         */
-        patch_handle_t Release() {
-            patch_handle_t h = Handle_;
-            Handle_ = nullptr;
-            OwnsHandle_ = false;
+        Handle Release() {
+            Handle h(_value, _own);
+            _value = nullptr;
+            _own   = false;
             return h;
         }
 
         // ==================== 元素访问 ====================
-
-        /**
-         * @brief 获取元素（带边界检查）
-         * @throws std::out_of_range 如果索引越界
-         */
         T At(const size_t index) const {
-            T value;
-            if (!patchlib_array_at(Handle_, index, &value)) {
-                throw std::out_of_range("Array index out of bounds");
+            patch_handle_t raw = nullptr;
+            if constexpr (std::is_same_v<T, Handle>) {
+                if (!patchlib_array_at(_value, index, &raw)) {
+                    throw std::out_of_range("Array index out of bounds");
+                }
+                return Handle(raw, true);
+            } else {
+                T value;
+                if (!patchlib_array_at(_value, index, &value)) {
+                    throw std::out_of_range("Array index out of bounds");
+                }
+                return value;
             }
-            return value;
         }
 
-        /**
-         * @brief 获取元素（无边界检查）
-         */
         T operator[](const size_t index) const {
-            T value;
-            patchlib_array_at(Handle_, index, &value);
-            return value;
+           return At(index);
         }
 
-        /**
-         * @brief 设置元素（带边界检查）
-         * @throws std::out_of_range 如果索引越界
-         */
         void Set(const size_t index, const T &value) {
-            if (!patchlib_array_set(Handle_, index, const_cast<void *>(static_cast<const void *>(&value)))) {
-                throw std::out_of_range("Array index out of bounds");
+            if constexpr (std::is_same_v<T, Handle>) {
+                patch_handle_t raw = value.Raw();
+                if (!patchlib_array_set(_value, index, &raw)) {
+                    throw std::out_of_range("Array index out of bounds");
+                }
+            } else {
+                if (!patchlib_array_set(_value, index,
+                                        const_cast<void *>(static_cast<const void *>(&value)))) {
+                    throw std::out_of_range("Array index out of bounds");
+                                        }
             }
         }
 
-        /**
-         * @brief 设置元素（无边界检查）
-         */
         void SetUnchecked(const size_t index, const T &value) {
-            patchlib_array_set(Handle_, index, const_cast<void *>(static_cast<const void *>(&value)));
+            if constexpr (std::is_same_v<T, Handle>) {
+                patch_handle_t raw = value.Raw();
+                patchlib_array_set(_value, index, &raw);
+            } else {
+                patchlib_array_set(_value, index,
+                                   const_cast<void *>(static_cast<const void *>(&value)));
+            }
         }
 
         // ==================== 容量 ====================
-
-        /**
-         * @brief 获取数组长度
-         */
-        [[nodiscard]] size_t Length() const {
-            return patchlib_array_length(Handle_);
-        }
-
-        /**
-         * @brief 判断是否为空
-         */
-        [[nodiscard]] bool IsEmpty() const {
-            return patchlib_array_empty(Handle_);
-        }
-
-        /**
-         * @brief 获取元素个数（同Length）
-         */
-        [[nodiscard]] size_t Size() const {
-            return Length();
-        }
+        [[nodiscard]] size_t Length() const { return patchlib_array_length(_value); }
+        [[nodiscard]] bool IsEmpty() const { return patchlib_array_empty(_value); }
+        [[nodiscard]] size_t Size() const { return Length(); }
 
         // ==================== 填充 ====================
-
-        /**
-         * @brief 填充所有元素
-         */
         void Fill(const T &value) {
-            if (!patchlib_array_fill(Handle_, const_cast<void *>(static_cast<const void *>(&value)))) {
-                throw std::runtime_error("Failed to fill array");
+            if constexpr (std::is_same_v<T, Handle>) {
+                patch_handle_t raw = value.Raw();
+                if (!patchlib_array_fill(_value, &raw)) {
+                    throw std::runtime_error("Failed to fill array");
+                }
+            } else {
+                if (!patchlib_array_fill(_value,
+                                         const_cast<void *>(static_cast<const void *>(&value)))) {
+                    throw std::runtime_error("Failed to fill array");
+                                         }
             }
         }
 
-        // ==================== 复制操作 ====================
-
-        /**
-         * @brief 复制到C数组
-         */
+        // ==================== 复制 ====================
         void CopyToC(T *dest, const size_t count) const {
-            if (!patchlib_array_copy_to_c(dest, Handle_, count)) {
-                throw std::runtime_error("Failed to copy to C array");
+            if constexpr (std::is_same_v<T, Handle>) {
+                // dest 是 Handle*，C API 写 patch_handle_t*，不能直接用。
+                // 先读到临时 patch_handle_t 数组，再逐个包 Handle 视图。
+                std::vector<patch_handle_t> raw(count, nullptr);
+                if (!patchlib_array_copy_to_c(raw.data(), _value, count)) {
+                    throw std::runtime_error("Failed to copy to C array");
+                }
+                for (size_t i = 0; i < count; ++i)
+                    dest[i] = Handle(raw[i], true);
+            } else {
+                if (!patchlib_array_copy_to_c(dest, _value, count)) {
+                    throw std::runtime_error("Failed to copy to C array");
+                }
             }
         }
 
-        /**
-         * @brief 从C数组复制
-         */
         void CopyFromC(const T *src, const size_t count) {
-            if (!patchlib_array_copy_from_c(Handle_, src, count)) {
-                throw std::runtime_error("Failed to copy from C array");
+            if constexpr (std::is_same_v<T, Handle>) {
+                std::vector<patch_handle_t> raw(count, nullptr);
+                for (size_t i = 0; i < count; ++i) raw[i] = src[i].Raw();
+                if (!patchlib_array_copy_from_c(_value, raw.data(), count)) {
+                    throw std::runtime_error("Failed to copy from C array");
+                }
+            } else {
+                if (!patchlib_array_copy_from_c(_value, src, count)) {
+                    throw std::runtime_error("Failed to copy from C array");
+                }
             }
         }
 
-        /**
-        * @brief 从另一个数组复制 count 个元素到当前数组
-        * @param src 源数组
-        * @param count 要复制的元素数量
-        * @throws std::runtime_error 失败时抛出（类型不匹配 / 越界 / 目标空间不足）
-        * @note 两个数组的元素类型大小必须相同，且目标数组容量必须 >= count
-        */
         void CopyFrom(const Array &src, const size_t count) {
-            if (!patchlib_array_copy(Handle_, src.Handle_, count)) {
+            if (!patchlib_array_copy(_value, src.Raw(), count)) {
                 throw std::runtime_error("Failed to copy from array");
             }
         }
 
-        /**
-        * @brief 返回扩容后的新数组（不修改当前对象）
-        * @param newSize 新大小
-        * @param defaultValue 新增元素的默认值
-        * @return 新的 Array 实例（拥有新句柄）
-        * @throws std::runtime_error 失败时抛出
-        * @note 适合函数式用法，不破坏当前对象
-        */
         Array Resized(const size_t newSize, const T &defaultValue) const {
-            patch_handle_t newHandle = patchlib_array_resize(
-                Handle_, newSize,
-                const_cast<void *>(static_cast<const void *>(&defaultValue)));
+            patch_handle_t newHandle;
+            if constexpr (std::is_same_v<T, Handle>) {
+                patch_handle_t raw = defaultValue.Raw();
+                newHandle = patchlib_array_resize(_value, newSize, &raw);
+            } else {
+                newHandle = patchlib_array_resize(
+                    _value, newSize,
+                    const_cast<void *>(static_cast<const void *>(&defaultValue)));
+            }
             if (newHandle == nullptr) {
                 throw std::runtime_error("Failed to resize array");
             }
-            return Array(newHandle, true);
+            return Array(Handle(newHandle, true));
         }
 
-        /**
-         * @brief 转换为std::vector
-         */
         std::vector<T> ToStdVector() const {
             std::vector<T> result;
             result.resize(Length());
@@ -328,48 +261,17 @@ namespace TEFKernel::PatchLib::Struct {
             return result;
         }
 
-        // ==================== 迭代器支持 ====================
-
-        /**
-         * @brief 简单迭代器类
-         */
+        // ==================== 迭代器 ====================
         class Iterator {
         public:
-            Iterator(Array *array, const size_t index) : Array_(array), Index_(index) {
-            }
-
-            Iterator &operator++() {
-                ++Index_;
-                return *this;
-            }
-
-            Iterator operator++(int) {
-                Iterator tmp = *this;
-                ++(*this);
-                return tmp;
-            }
-
-            Iterator &operator--() {
-                --Index_;
-                return *this;
-            }
-
-            Iterator operator--(int) {
-                Iterator tmp = *this;
-                --(*this);
-                return tmp;
-            }
-
+            Iterator(Array *array, const size_t index) : Array_(array), Index_(index) {}
+            Iterator &operator++() { ++Index_; return *this; }
+            Iterator operator++(int) { Iterator t = *this; ++(*this); return t; }
+            Iterator &operator--() { --Index_; return *this; }
+            Iterator operator--(int) { Iterator t = *this; --(*this); return t; }
             T operator*() const { return (*Array_)[Index_]; }
-
-            bool operator==(const Iterator &other) const {
-                return Array_ == other.Array_ && Index_ == other.Index_;
-            }
-
-            bool operator!=(const Iterator &other) const {
-                return !(*this == other);
-            }
-
+            bool operator==(const Iterator &o) const { return Array_ == o.Array_ && Index_ == o.Index_; }
+            bool operator!=(const Iterator &o) const { return !(*this == o); }
         private:
             Array *Array_;
             size_t Index_;
@@ -377,41 +279,14 @@ namespace TEFKernel::PatchLib::Struct {
 
         class ConstIterator {
         public:
-            ConstIterator(const Array *array, const size_t index) : Array_(array), Index_(index) {
-            }
-
-            ConstIterator &operator++() {
-                ++Index_;
-                return *this;
-            }
-
-            ConstIterator operator++(int) {
-                ConstIterator tmp = *this;
-                ++(*this);
-                return tmp;
-            }
-
-            ConstIterator &operator--() {
-                --Index_;
-                return *this;
-            }
-
-            ConstIterator operator--(int) {
-                ConstIterator tmp = *this;
-                --(*this);
-                return tmp;
-            }
-
+            ConstIterator(const Array *array, const size_t index) : Array_(array), Index_(index) {}
+            ConstIterator &operator++() { ++Index_; return *this; }
+            ConstIterator operator++(int) { ConstIterator t = *this; ++(*this); return t; }
+            ConstIterator &operator--() { --Index_; return *this; }
+            ConstIterator operator--(int) { ConstIterator t = *this; --(*this); return t; }
             T operator*() const { return (*Array_)[Index_]; }
-
-            bool operator==(const ConstIterator &other) const {
-                return Array_ == other.Array_ && Index_ == other.Index_;
-            }
-
-            bool operator!=(const ConstIterator &other) const {
-                return !(*this == other);
-            }
-
+            bool operator==(const ConstIterator &o) const { return Array_ == o.Array_ && Index_ == o.Index_; }
+            bool operator!=(const ConstIterator &o) const { return !(*this == o); }
         private:
             const Array *Array_;
             size_t Index_;
@@ -425,10 +300,7 @@ namespace TEFKernel::PatchLib::Struct {
         ConstIterator CEnd() const { return ConstIterator(this, Length()); }
 
         // ==================== 运算符 ====================
-
-        explicit operator bool() const {
-            return IsValid();
-        }
+        explicit operator bool() const { return IsValid(); }
 
         bool operator==(const Array &other) const {
             if (Length() != other.Length()) return false;
@@ -438,30 +310,16 @@ namespace TEFKernel::PatchLib::Struct {
             return true;
         }
 
-        bool operator!=(const Array &other) const {
-            return !(*this == other);
-        }
+        bool operator!=(const Array &other) const { return !(*this == other); }
 
-        // ==================== 静态工厂方法 ====================
+        // ==================== 静态工厂 ====================
+        static Array CreateEmpty() { return Array(0); }
 
-        /**
-         * @brief 创建空数组
-         */
-        static Array CreateEmpty() {
-            return Array(0);
-        }
-
-        /**
-         * @brief 从初始化列表创建
-         */
         static Array FromInitializerList(const std::initializer_list<T> &list) {
             return Array(std::vector<T>(list));
         }
 
     private:
-        /**
-         * @brief 获取对应Patch类型
-         */
         static patch_type_t GetPatchType() {
             if constexpr (std::is_same_v<T, void>) return PATCH_VOID;
             else if constexpr (std::is_same_v<T, int8_t>) return PATCH_INT8;
@@ -476,38 +334,20 @@ namespace TEFKernel::PatchLib::Struct {
             else if constexpr (std::is_same_v<T, float>) return PATCH_FLOAT;
             else if constexpr (std::is_same_v<T, double>) return PATCH_DOUBLE;
             else if constexpr (std::is_same_v<T, char>) return PATCH_CHAR;
-            else if constexpr (std::is_same_v<T, void*>) return PATCH_POINTER;
+            else if constexpr (std::is_same_v<T, void *>) return PATCH_POINTER;
             else return PATCH_OBJECT;
         }
-
-        patch_handle_t Handle_;
-        bool OwnsHandle_;
     };
 
-    // ==================== 辅助函数 ====================
-
-    /**
-     * @brief 创建数组的便捷函数
-     */
     template<typename T>
-    Array<T> MakeArray(const size_t size) {
-        return Array<T>(size);
-    }
+    Array<T> MakeArray(size_t size) { return Array<T>(size); }
 
-    /**
-     * @brief 从vector创建数组的便捷函数
-     */
     template<typename T>
-    Array<T> MakeArrayFromVector(const std::vector<T> &vec) {
-        return Array<T>(vec);
-    }
+    Array<T> MakeArrayFromVector(const std::vector<T> &vec) { return Array<T>(vec); }
 
-    /**
-     * @brief 从初始化列表创建数组的便捷函数
-     */
     template<typename T>
     Array<T> MakeArrayFromList(const std::initializer_list<T> &list) {
         return Array<T>::FromInitializerList(list);
     }
 
-}
+} // namespace TEFKernel::PatchLib::Struct

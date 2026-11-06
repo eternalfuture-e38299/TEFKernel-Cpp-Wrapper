@@ -30,144 +30,119 @@
 
 #pragma once
 
+#include "handle.hpp"
 #include "tefkernel/patchlib/method.h"
-#include "type.hpp"
 #include "../tefstd/vector.hpp"
-#include <string>
+#include "hook.hpp"
+
 #include <memory>
+#include <string>
+#include <type_traits>
 
 namespace TEFKernel::PatchLib {
     /**
      * @brief 方法签名信息包装类
+     *  直接继承 patch_method_signature_t，字段可直接访问：
+     *      method / is_instance / return_type / arg_types / arg_names / token
      */
-    class MethodSignature {
-    public:
+    struct MethodSignature : patch_method_signature_t {
         MethodSignature();
 
-        explicit MethodSignature(const patch_method_signature_t &sig) : signature_(sig) {
+        // 从 C 结构体拷贝构造（浅拷贝）
+        explicit MethodSignature(const patch_method_signature_t &sig)
+            : patch_method_signature_t(sig) {
         }
 
         ~MethodSignature();
 
-        // 移动构造
         MethodSignature(MethodSignature &&other) noexcept;
 
-        // 移动赋值
         MethodSignature &operator=(MethodSignature &&other) noexcept;
 
-        // 拷贝被禁用
+        // 拷贝禁用
         MethodSignature(const MethodSignature &) = delete;
 
         MethodSignature &operator=(const MethodSignature &) = delete;
 
-        [[nodiscard]] patch_handle_t getMethod() const { return signature_.method; }
-        [[nodiscard]] bool isInstance() const { return signature_.is_instance; }
-        [[nodiscard]] patch_type_t getReturnType() const { return signature_.return_type; }
-        [[nodiscard]] int getToken() const { return signature_.token; }
+        // 便捷访问（可选，直接字段也能用）
+        [[nodiscard]] patch_handle_t getMethod() const { return method; }
+        [[nodiscard]] bool isInstance() const { return is_instance; }
+        [[nodiscard]] patch_type_t getReturnType() const { return return_type; }
+        [[nodiscard]] int getToken() const { return token; }
 
-        /**
-         * @brief 获取参数类型列表（转换为C++ Vector）
-         */
         [[nodiscard]] Std::Vector<patch_type_t> GetArgTypes() const;
 
-        /**
-         * @brief 获取参数名称列表
-         */
         [[nodiscard]] Std::Vector<std::string> GetArgNames() const;
 
-        [[nodiscard]] const patch_method_signature_t *GetRaw() const { return &signature_; }
-
-    private:
-        patch_method_signature_t signature_;
+        [[nodiscard]] const patch_method_signature_t *GetRaw() const {
+            return this;
+        }
     };
 
-    /**
-     * @brief Hook ID包装类
-     */
-    class HookId {
-    public:
-        HookId() : id_(PATCH_HOOK_INVALID_ID) {
+    struct Method : Handle {
+        Handle _instance{};
+        bool _is_ctor{};
+
+        Method() = default;
+
+        Method(const Handle &h) : Handle(h) {
         }
 
-        explicit HookId(const patch_hook_id_t id) : id_(id) {
+        explicit Method(const Handle &h, const bool takeOwnership)
+            : Handle(h.Raw(), takeOwnership) {
+            _is_ctor = CheckCtor();
         }
 
-        [[nodiscard]] patch_hook_id_t Get() const { return id_; }
-        [[nodiscard]] bool IsValid() const { return id_ != PATCH_HOOK_INVALID_ID; }
+        ~Method() = default;
 
-        void Reset() { id_ = PATCH_HOOK_INVALID_ID; }
-
-        bool operator==(const HookId &other) const { return id_ == other.id_; }
-        bool operator!=(const HookId &other) const { return id_ != other.id_; }
-        explicit operator bool() const { return IsValid(); }
-
-    private:
-        patch_hook_id_t id_;
-    };
-
-    /**
-     * @brief Hook回调函数包装类
-     */
-    class HookCallbacks {
-    public:
-        using PrefixCallback = prefix_callback_t;
-        using PostfixCallback = postfix_callback_t;
-
-        HookCallbacks() = default;
-
-        HookCallbacks(const PrefixCallback prefix, const PostfixCallback postfix)
-            : prefix_(prefix), postfix_(postfix) {
+        Method(const Method &other)
+            : Handle(static_cast<const Handle &>(other)), _instance(other._instance) {
+            _is_ctor = CheckCtor();
         }
 
-        void SetPrefix(const PrefixCallback callback) { prefix_ = callback; }
-        void SetPostfix(const PostfixCallback callback) { postfix_ = callback; }
-
-        prefix_callback_t getPrefix() { return prefix_; }
-        postfix_callback_t getPostfix() { return postfix_; }
-        [[nodiscard]] const PrefixCallback &getPrefix() const { return prefix_; }
-        [[nodiscard]] const PostfixCallback &getPostfix() const { return postfix_; }
-
-    private:
-        PrefixCallback prefix_;
-        PostfixCallback postfix_;
-    };
-
-    /**
-     * @brief 方法包装类
-     */
-    class Method {
-    public:
-        Method() : handle_(nullptr), ownsHandle_(false) {
+        Method &operator=(const Method &other) {
+            if (this != &other) {
+                Handle::operator=(other);
+                _instance = other._instance;
+                _is_ctor = other._is_ctor;
+            }
+            return *this;
         }
 
-        explicit Method(patch_handle_t handle, const bool takeOwnership = false)
-            : handle_(handle), ownsHandle_(takeOwnership) {
+        Method(Method &&other) noexcept
+            : Handle(std::move(static_cast<Handle &>(other))),
+              _instance(std::move(other._instance)),
+              _is_ctor(other._is_ctor) {
         }
 
-        ~Method();
+        Method &operator=(Method &&other) noexcept {
+            if (this != &other) {
+                Handle::operator=(std::move(static_cast<Handle &>(other)));
+                _instance = std::move(other._instance);
+                _is_ctor = other._is_ctor;
+            }
+            return *this;
+        }
 
-        // 拷贝构造
-        Method(const Method &other);
+        [[nodiscard]] bool IsValid() const { return patchlib_is_valid(_value); }
 
-        // 拷贝赋值
-        Method &operator=(const Method &other);
+        void reset(const Handle &newHandle = {}, const bool takeOwnership = false) {
+            Reset(newHandle.Raw(), takeOwnership);
+        }
 
-        // 移动构造
-        Method(Method &&other) noexcept;
+        Handle Release() {
+            Handle h(_value, _own);
+            _value = nullptr;
+            _own = false;
+            return h;
+        }
 
-        // 移动赋值
-        Method &operator=(Method &&other) noexcept;
+        // ---- 实例绑定 ----
+        void SetInstance(const Handle &instance) { _instance = instance; }
+        [[nodiscard]] const Handle &GetInstance() const { return _instance; }
+        void ClearInstance() { _instance.Reset(); }
 
-        [[nodiscard]] patch_handle_t GetHandle() const { return handle_; }
-
-        [[nodiscard]] bool IsValid() const;
-
-        void reset(patch_handle_t newHandle = nullptr, bool takeOwnership = false);
-
-        patch_handle_t Release();
-
-        // ==================== 基本信息 ====================
-
+        // ---- 基本信息 ----
         [[nodiscard]] std::string GetName() const;
 
         [[nodiscard]] int GetParamCount() const;
@@ -180,94 +155,147 @@ namespace TEFKernel::PatchLib {
 
         [[nodiscard]] patch_type_t GetReturnType() const;
 
-        // ==================== 泛型 ====================
+        // ---- 泛型 ----
+        [[nodiscard]] Method MakeGenericInstance(const Std::Vector<Handle> &templateTypes) const;
 
-        [[nodiscard]] Method MakeGenericInstance(const Std::Vector<patch_handle_t> &templateTypes) const;
-
-        // ==================== 调用 ====================
-
+        // ---- 调用 ----
 #if __ANDROID__
         [[nodiscard]] void *GetPointer() const;
 #endif
 
-        /**
-         * @brief 调用方法（模板版本）
-         */
         template<typename ReturnType, typename... Args>
-        // ReSharper disable once CppNotAllPathsReturnValue
-        ReturnType Invoke(patch_handle_t instance, Args... args) const {
+        ReturnType Invoke(Args... args) const {
 #if !defined(__ANDROID__)
-            void *argArray[] = {&args...};
-            ReturnType result;
-            patchlib_method_invoke_args(handle_, instance, &result, argArray);
+            void *argArray[] = {ToRawArg(args)...};
 
-            if constexpr (!std::is_same_v<ReturnType, void>) return result;
+            if constexpr (std::is_same_v<ReturnType, Handle>) {
+                patch_handle_t raw = nullptr;
+                patchlib_method_invoke_args(_value, _instance.Raw(), &raw, argArray);
+                return Handle(raw, true); // owning
+            } else if constexpr (std::is_void_v<ReturnType>) {
+                patchlib_method_invoke_args(_value, _instance.Raw(), nullptr, argArray);
+                return;
+            } else {
+                ReturnType result;
+                patchlib_method_invoke_args(_value, _instance.Raw(), &result, argArray);
+                return result;
+            }
 #else
-            if (IsInstance())
-                return static_cast<ReturnType(*)(void *, Args..., void *)>(GetPointer())(instance, args..., handle_);
-
-            return static_cast<ReturnType(*)(Args..., void *)>(GetPointer())(args..., handle_);
+            if constexpr (std::is_same_v<ReturnType, Handle>) {
+                if (IsInstance()) {
+                    auto fn = reinterpret_cast<patch_handle_t (*)(void *, Args..., void *)>(
+                        GetPointer());
+                    return Handle(fn(_instance.Raw(), args..., _value), true);
+                }
+                auto fn = reinterpret_cast<patch_handle_t (*)(Args..., void *)>(GetPointer());
+                return Handle(fn(args..., _value), true);
+            } else if constexpr (std::is_void_v<ReturnType>) {
+                if (IsInstance()) {
+                    auto fn = reinterpret_cast<void (*)(void *, Args..., void *)>(GetPointer());
+                    fn(_instance.Raw(), args..., _value);
+                } else {
+                    auto fn = reinterpret_cast<void (*)(Args..., void *)>(GetPointer());
+                    fn(args..., _value);
+                }
+                return;
+            } else {
+                if (IsInstance()) {
+                    auto fn = reinterpret_cast<ReturnType (*)(void *, Args..., void *)>(
+                        GetPointer());
+                    return fn(_instance.Raw(), args..., _value);
+                }
+                auto fn = reinterpret_cast<ReturnType (*)(Args..., void *)>(GetPointer());
+                return fn(args..., _value);
+            }
 #endif
         }
 
-        /**
-         * @brief 调用方法（原始指针版本）
-         */
-        bool InvokeArgs(patch_handle_t instance, void *returnValue, void **args) const;
-
-        /**
-         * @brief 调用构造函数并创建新实例
-         * @param args 构造函数的参数
-         * @return 新创建的实例句柄，失败返回PATCH_NULL
-         */
         template<typename... Args>
-        patch_handle_t InvokeConstructor(Args... args) const {
-            void* argArray[] = {&args...};
+        Handle InvokeConstructor(Args... args) const {
+            void *argArray[] = {ToRawArg(args)...};
             patch_handle_t instance = nullptr;
-
-            if (patchlib_constructor_invoke(handle_, &instance, argArray)) {
-                return instance;
+            if (patchlib_constructor_invoke(_value, &instance, argArray)) {
+                return Handle(instance, true); // owning
             }
-            return nullptr;
+            return {};
         }
 
-        /**
-         * @brief 调用构造函数（原始指针版本）
-         * @param return_instance 输出新实例句柄
-         * @param args 参数指针数组
-         * @return 是否成功
-         */
-        bool InvokeConstructorRaw(patch_handle_t* return_instance, void** args) const;
+        template<typename ReturnType, typename... Args>
+        ReturnType InvokeWithInstance(const Handle &instance, Args... args) const {
+            Method tmp(*this);
+            tmp.SetInstance(instance);
+            return tmp.Invoke<ReturnType>(args...);
+        }
 
-        // ==================== 签名 ====================
+        // ==================== 运算符：method[instance] ====================
+        [[nodiscard]] Method operator[](const Handle &instance) const {
+            Method tmp(*this);
+            tmp.SetInstance(instance);
+            return tmp;
+        }
+
+        // ==================== 运算符：像函数一样调用 ====================
+        template<typename ReturnType = void, typename... Args>
+        ReturnType operator()(Args... args) const {
+            return Invoke<ReturnType>(args...);
+        }
 
         [[nodiscard]] std::unique_ptr<MethodSignature> GetSignature() const;
 
-        // ==================== Hook ====================
+        // Method 里：
+        template<typename Tag, typename PrefixFn, typename PostfixFn>
+        [[nodiscard]] HookId InstallPrePostHook(PrefixFn prefix, PostfixFn postfix) const {
+            using CB = HookCallbacks<Tag, PrefixFn, PostfixFn>;
+            auto *callbacks = new CB(std::move(prefix), std::move(postfix));
+            const patch_hook_id_t id = patchlib_install_prepost_hook(
+                _value,
+                CB::HasPrefix()   ? &CB::TrampolinePrefix  : nullptr,
+                CB::HasPostfix()  ? &CB::TrampolinePostfix : nullptr);
+            // callbacks 生命周期：见下文
+            return HookId(id);
+        }
 
-        /**
-         * @brief 安装Prefix/Postfix Hook
-         */
-        [[nodiscard]] HookId InstallPrePostHook(
-            HookCallbacks::PrefixCallback prefix,
-            HookCallbacks::PostfixCallback postfix
-        ) const;
+        // 只挂前缀
+        template<typename Tag, typename PrefixFn>
+        [[nodiscard]] HookId InstallPrefixHook(PrefixFn prefix) const {
+            return InstallPrePostHook<Tag>(std::move(prefix), NoPostfix{});
+        }
 
-        /**
-         * @brief 卸载Hook
-         */
+        // 只挂后缀
+        template<typename Tag, typename PostfixFn>
+        [[nodiscard]] HookId InstallPostfixHook(PostfixFn postfix) const {
+            return InstallPrePostHook<Tag>(NoPrefix{}, std::move(postfix));
+        }
+
         static bool UninstallHook(const HookId &hookId);
 
-        // ==================== 运算符 ====================
-
-        explicit operator bool() const;
-
-        bool operator==(const Method &other) const;
-
-        bool operator!=(const Method &other) const;
+        explicit operator bool() const { return IsValid(); }
+        bool operator==(const Method &other) const { return _value == other._value; }
+        bool operator!=(const Method &other) const { return !(*this == other); }
 
     private:
-        patch_handle_t handle_;
-        bool ownsHandle_;
+        [[nodiscard]] bool CheckCtor() const {
+            if (_value == nullptr) return false;
+            const char *name = patchlib_method_get_name(_value);
+            return name && std::strcmp(name, ".ctor") == 0;
+        }
+
+        template<typename T>
+        static void *ToRawArg(T &value) {
+            if constexpr (std::is_same_v<std::decay_t<T>, Handle>) {
+                return value.Raw();
+            } else {
+                return &value;
+            }
+        }
+
+        template<typename T>
+        static void *ToRawArg(const T &value) {
+            if constexpr (std::is_same_v<std::decay_t<T>, Handle>) {
+                return value.Raw();
+            } else {
+                return const_cast<void *>(static_cast<const void *>(&value));
+            }
+        }
     };
 }

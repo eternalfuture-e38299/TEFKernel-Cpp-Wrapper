@@ -30,66 +30,67 @@
 
 #pragma once
 
-#include "tefkernel/patchlib/property.h"
-#include "type.hpp"
+#include "handle.hpp"
 #include "method.hpp"
+#include "tefkernel/patchlib/property.h"
+
 #include <string>
 
 namespace TEFKernel::PatchLib {
+
     /**
      * @brief 属性包装类
      */
-    class Property {
-    public:
-        Property() : handle_(nullptr), ownsHandle_(false) {
+    struct Property : Handle {
+        Property() = default;
+
+        Property(const Handle &h) : Handle(h) {}                              // 视图
+        explicit Property(const Handle &h, const bool takeOwnership)
+            : Handle(h.Raw(), takeOwnership) {}                              // 显式接管
+
+        ~Property() = default;
+
+        Property(const Property &other) : Handle(static_cast<const Handle &>(other)) {}
+
+        Property &operator=(const Property &other) {
+            if (this != &other) {
+                Handle::operator=(other);
+            }
+            return *this;
         }
 
-        explicit Property(patch_handle_t handle, const bool takeOwnership = false)
-            : handle_(handle), ownsHandle_(takeOwnership) {
+        Property(Property &&other) noexcept : Handle(std::move(static_cast<Handle &>(other))) {}
+
+        Property &operator=(Property &&other) noexcept {
+            if (this != &other) {
+                Handle::operator=(std::move(static_cast<Handle &>(other)));
+            }
+            return *this;
         }
 
-        ~Property();
+        [[nodiscard]] bool IsValid() const { return patchlib_is_valid(_value); }
 
-        // 拷贝构造
-        Property(const Property &other);
+        void Reset(const Handle &newHandle = {}, const bool takeOwnership = false) {
+            Handle::Reset(newHandle.Raw(), takeOwnership);
+        }
 
-        // 拷贝赋值
-        Property &operator=(const Property &other);
-
-        // 移动构造
-        Property(Property &&other) noexcept;
-
-        // 移动赋值
-        Property &operator=(Property &&other) noexcept;
-
-        [[nodiscard]] patch_handle_t GetHandle() const { return handle_; }
-
-        [[nodiscard]] bool IsValid() const;
-
-        void Reset(patch_handle_t newHandle = nullptr, bool takeOwnership = false);
-
-        patch_handle_t Release();
+        Handle Release() {
+            Handle h(_value, _own);
+            _value = nullptr;
+            _own   = false;
+            return h;
+        }
 
         // ==================== 基本信息 ====================
-
         [[nodiscard]] std::string GetName() const;
 
         // ==================== 方法获取 ====================
-
         [[nodiscard]] Method GetGetMethod() const;
-
         [[nodiscard]] Method GetSetMethod() const;
 
         // ==================== 运算符 ====================
-
-        explicit operator bool() const;
-
-        bool operator==(const Property &other) const;
-
-        bool operator!=(const Property &other) const;
-
-    private:
-        patch_handle_t handle_;
-        bool ownsHandle_;
+        explicit operator bool() const { return IsValid(); }
+        bool operator==(const Property &other) const { return _value == other._value; }
+        bool operator!=(const Property &other) const { return !(*this == other); }
     };
 }

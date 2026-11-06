@@ -21,6 +21,7 @@ add_library(tefkernel_cpp_wrapper STATIC
         src/patchlib/property.cpp
         src/patchlib/method.cpp
         src/patchlib/struct/string.cpp
+        src/patchlib/handle.cpp
 )
 
 target_include_directories(tefkernel_cpp_wrapper

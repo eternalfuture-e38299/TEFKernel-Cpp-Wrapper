@@ -30,153 +30,91 @@
 
 #pragma once
 
-#include "tefkernel/patchlib/struct/string.h"
+#include "../handle.hpp"
 #include "../type.hpp"
-#include <string>
+#include "tefkernel/patchlib/struct/string.h"
+
 #include <memory>
+#include <string>
 
 namespace TEFKernel::PatchLib::Struct {
+
     /**
      * @brief 字符串包装类
-     *
-     * 提供对C API中字符串操作的C++封装
      */
-    class String {
-    public:
-        /**
-         * @brief 默认构造函数
-         */
-        String() : handle_(nullptr), ownsHandle_(false) {
-        }
+    struct String : Handle {
+        String() = default;
 
-        /**
-         * @brief 从已有句柄构造
-         */
-        explicit String(patch_handle_t handle, const bool takeOwnership = false)
-            : handle_(handle), ownsHandle_(takeOwnership) {
-        }
+        String(const Handle &h) : Handle(h) {}                                // 视图
+        explicit String(const Handle &h, const bool takeOwnership)
+            : Handle(h.Raw(), takeOwnership) {}                              // 显式接管
 
-        /**
-         * @brief 从C字符串创建
-         */
         explicit String(const char *str);
+        explicit String(const std::string &str) : String(str.c_str()) {}
 
-        /**
-         * @brief 从std::string创建
-         */
-        explicit String(const std::string &str)
-            : String(str.c_str()) {
+        ~String() = default;
+
+        String(const String &other) : Handle(static_cast<const Handle &>(other)) {}
+
+        String &operator=(const String &other) {
+            if (this != &other) {
+                Handle::operator=(static_cast<const Handle &>(other));
+            }
+            return *this;
         }
 
-        /**
-         * @brief 析构函数
-         */
-        ~String();
+        String(String &&other) noexcept : Handle(std::move(static_cast<Handle &>(other))) {}
 
-        // 拷贝构造
-        String(const String &other);
+        String &operator=(String &&other) noexcept {
+            if (this != &other) {
+                Handle::operator=(std::move(static_cast<Handle &>(other)));
+            }
+            return *this;
+        }
 
-        // 拷贝赋值
-        String &operator=(const String &other);
-
-        // 移动构造
-        String(String &&other) noexcept;
-
-        // 移动赋值
-        String &operator=(String &&other) noexcept;
-
-        /**
-         * @brief 赋值运算符（从C字符串）
-         */
+        // 从 C 字符串赋值（创建新句柄）
         String &operator=(const char *str);
+        String &operator=(const std::string &str) { return *this = str.c_str(); }
 
-        /**
-         * @brief 赋值运算符（从std::string）
-         */
-        String &operator=(const std::string &str);
+        [[nodiscard]] bool IsValid() const { return patchlib_is_valid(_value); }
 
-        /**
-         * @brief 获取原始句柄
-         */
-        [[nodiscard]] patch_handle_t GetHandle() const { return handle_; }
+        void Reset(const Handle &newHandle = {}, const bool takeOwnership = false) {
+            Handle::Reset(newHandle.Raw(), takeOwnership);
+        }
 
-        /**
-         * @brief 检查是否有效
-         */
-        [[nodiscard]] bool IsValid() const;
-
-        /**
-         * @brief 重置句柄
-         */
-        void Reset(patch_handle_t newHandle = nullptr, bool takeOwnership = false);
-
-        /**
-         * @brief 释放所有权
-         */
-        patch_handle_t Release();
+        Handle Release() {
+            Handle h(_value, _own);
+            _value = nullptr;
+            _own   = false;
+            return h;
+        }
 
         // ==================== 字符串操作 ====================
-
-        /**
-         * @brief 转换为C字符串
-         * @warning 返回的指针需要调用者使用free释放
-         */
         [[nodiscard]] std::unique_ptr<char, decltype(&free)> CStr() const;
-
-        /**
-         * @brief 转换为std::string
-         */
         [[nodiscard]] std::string ToString() const;
-
-        /**
-         * @brief 获取字符串长度
-         */
         [[nodiscard]] size_t Length() const;
-
-        /**
-         * @brief 判断是否为空
-         */
         [[nodiscard]] bool Empty() const;
 
-        /**
-         * @brief 转换为bool（非空返回true）
-         */
-        explicit operator bool() const;
+        explicit operator bool() const { return IsValid() && !Empty(); }
 
-        // ==================== 比较运算符 ====================
-
+        // ==================== 比较 ====================
         bool operator==(const String &other) const;
-
         bool operator==(const char *str) const;
-
         bool operator==(const std::string &str) const;
 
-        bool operator!=(const String &other) const;
-
-        bool operator!=(const char *str) const;
-
-        bool operator!=(const std::string &str) const;
+        bool operator!=(const String &other) const { return !(*this == other); }
+        bool operator!=(const char *str) const { return !(*this == str); }
+        bool operator!=(const std::string &str) const { return !(*this == str); }
 
         bool operator<(const String &other) const;
-
         bool operator>(const String &other) const;
-
         bool operator<=(const String &other) const;
-
         bool operator>=(const String &other) const;
 
-        // ==================== 友元函数 ====================
-
         friend bool operator==(const char *lhs, const String &rhs);
-
         friend bool operator==(const std::string &lhs, const String &rhs);
-
         friend bool operator!=(const char *lhs, const String &rhs);
-
         friend bool operator!=(const std::string &lhs, const String &rhs);
-
-    private:
-        patch_handle_t handle_;
-        bool ownsHandle_;
     };
-}
+
+} // namespace TEFKernel::PatchLib::Struct

@@ -30,310 +30,237 @@
 
 #pragma once
 
-#include "tefkernel/patchlib/struct/dictionary.h"
+#include <cstdint>
+
 #include "../type.hpp"
-#include <unordered_map>
+#include "tefkernel/patchlib/struct/dictionary.h"
+
+#include <stdexcept>
 #include <type_traits>
+#include <unordered_map>
 
 namespace TEFKernel::PatchLib::Struct {
-    /**
-     * @brief 字典包装类
-     *
-     * 提供对C API中字典操作的C++封装
-     *
-     * @tparam Key 键类型
-     * @tparam Value 值类型
-     */
+
     template<typename Key, typename Value>
-    class Dictionary {
-    public:
-        /**
-         * @brief 默认构造函数
-         */
-        Dictionary() : handle_(nullptr), ownsHandle_(false) {
-        }
+    struct Dictionary : Handle {
+        Dictionary() = default;
 
-        /**
-         * @brief 从已有句柄构造
-         */
-        explicit Dictionary(patch_handle_t handle, const bool takeOwnership = false)
-            : handle_(handle), ownsHandle_(takeOwnership) {
-        }
+        Dictionary(const Handle &h) : Handle(h) {}
+        explicit Dictionary(const Handle &h, const bool takeOwnership)
+            : Handle(h.Raw(), takeOwnership) {}
 
-        /**
-         * @brief 创建字典
-         * @param capacity 初始容量
-         * @param keyType 键类型句柄（可选）
-         * @param valueType 值类型句柄（可选）
-         */
-        explicit Dictionary(const size_t capacity, patch_handle_t keyType = nullptr,
-                            patch_handle_t valueType = nullptr)
-            : handle_(nullptr), ownsHandle_(true) {
-            if (keyType == nullptr) {
-                keyType = Type::GetBasicType(getKeyPatchType()).GetHandle();
-            }
-            if (valueType == nullptr) {
-                valueType = Type::GetBasicType(getValuePatchType()).GetHandle();
-            }
-            handle_ = patchlib_dictionary_create(keyType, valueType, capacity);
-            if (handle_ == nullptr) {
+        explicit Dictionary(const size_t capacity, Handle keyType = {}, Handle valueType = {})
+            : Handle() {
+            if (keyType.Raw() == nullptr) keyType = Type::GetBasicType(GetKeyPatchType());
+            if (valueType.Raw() == nullptr) valueType = Type::GetBasicType(GetValuePatchType());
+
+            _value = patchlib_dictionary_create(keyType.Raw(), valueType.Raw(), capacity);
+            _own   = true;
+            if (_value == nullptr) {
                 throw std::runtime_error("Failed to create dictionary");
             }
         }
 
-        /**
-         * @brief 从std::unordered_map创建
-         */
         explicit Dictionary(const std::unordered_map<Key, Value> &map, size_t capacity = 0,
-                            patch_handle_t keyType = nullptr, patch_handle_t valueType = nullptr)
+                            Handle keyType = {}, Handle valueType = {})
             : Dictionary(capacity > 0 ? capacity : map.size(), keyType, valueType) {
-            for (const auto &pair: map) {
-                add(pair.first, pair.second);
-            }
+            for (const auto &pair : map) add(pair.first, pair.second);
         }
 
-        /**
-         * @brief 析构函数
-         */
-        ~Dictionary() {
-            if (ownsHandle_ && handle_ != nullptr) {
-#if !defined(__ANDROID__)
-                patchlib_free(handle_);
-#endif
-            }
-        }
+        ~Dictionary() = default;
 
-        // 拷贝构造
-        Dictionary(const Dictionary &other) : handle_(other.handle_), ownsHandle_(false) {
-            if (other.ownsHandle_ && other.handle_ != nullptr) {
-#if !defined(__ANDROID__)
-                handle_ = patchlib_handle_copy(other.handle_);
-                ownsHandle_ = true;
-#endif
-            }
-        }
+        Dictionary(const Dictionary &other) : Handle(static_cast<const Handle &>(other)) {}
 
-        // 拷贝赋值
         Dictionary &operator=(const Dictionary &other) {
             if (this != &other) {
-                Reset();
-                handle_ = other.handle_;
-                ownsHandle_ = false;
-                if (other.ownsHandle_ && other.handle_ != nullptr) {
-#if !defined(__ANDROID__)
-                    handle_ = patchlib_handle_copy(other.handle_);
-                    ownsHandle_ = true;
-#endif
-                }
+                Handle::operator=(static_cast<const Handle &>(other));
             }
             return *this;
         }
 
-        // 移动构造
-        Dictionary(Dictionary &&other) noexcept
-            : handle_(other.handle_), ownsHandle_(other.ownsHandle_) {
-            other.handle_ = nullptr;
-            other.ownsHandle_ = false;
-        }
+        Dictionary(Dictionary &&other) noexcept : Handle(std::move(static_cast<Handle &>(other))) {}
 
-        // 移动赋值
         Dictionary &operator=(Dictionary &&other) noexcept {
             if (this != &other) {
-                Reset();
-                handle_ = other.handle_;
-                ownsHandle_ = other.ownsHandle_;
-                other.handle_ = nullptr;
-                other.ownsHandle_ = false;
+                Handle::operator=(std::move(static_cast<Handle &>(other)));
             }
             return *this;
         }
 
-        /**
-         * @brief 获取原始句柄
-         */
-        [[nodiscard]] patch_handle_t GetHandle() const { return handle_; }
+        [[nodiscard]] bool IsValid() const { return patchlib_is_valid(_value); }
 
-        /**
-         * @brief 检查是否有效
-         */
-        [[nodiscard]] bool IsValid() const {
-            return patchlib_is_valid(handle_);
+        void Reset(const Handle &newHandle = {}, const bool takeOwnership = false) {
+            Handle::Reset(newHandle.Raw(), takeOwnership);
         }
 
-        /**
-         * @brief 重置句柄
-         */
-        void Reset(patch_handle_t newHandle = nullptr, const bool takeOwnership = false) {
-            if (ownsHandle_ && handle_ != nullptr) {
-#if !defined(__ANDROID__)
-                patchlib_free(handle_);
-#endif
-            }
-            handle_ = newHandle;
-            ownsHandle_ = takeOwnership;
-        }
-
-        /**
-         * @brief 释放所有权
-         */
-        patch_handle_t release() {
-            patch_handle_t h = handle_;
-            handle_ = nullptr;
-            ownsHandle_ = false;
+        Handle release() {
+            Handle h(_value, _own);
+            _value = nullptr;
+            _own   = false;
             return h;
         }
 
         // ==================== 元素操作 ====================
-
-        /**
-         * @brief 添加键值对
-         * @throws std::runtime_error 如果键已存在或添加失败
-         */
         void Add(const Key &key, const Value &value) {
-            if (!patchlib_dictionary_add(handle_,
-                                         const_cast<void *>(static_cast<const void *>(&key)),
-                                         const_cast<void *>(static_cast<const void *>(&value)))) {
-                throw std::runtime_error("Failed to add key-value pair to dictionary");
+            if constexpr (std::is_same_v<Key, Handle> || std::is_same_v<Value, Handle>) {
+                patch_handle_t kRaw, vRaw;
+                const void *kPtr = &key;
+                const void *vPtr = &value;
+                if constexpr (std::is_same_v<Key, Handle>) { kRaw = key.Raw(); kPtr = &kRaw; }
+                if constexpr (std::is_same_v<Value, Handle>) { vRaw = value.Raw(); vPtr = &vRaw; }
+                if (!patchlib_dictionary_add(_value,
+                                             const_cast<void *>(kPtr),
+                                             const_cast<void *>(vPtr))) {
+                    throw std::runtime_error("Failed to add key-value pair to dictionary");
+                                             }
+            } else {
+                if (!patchlib_dictionary_add(_value,
+                                             const_cast<void *>(static_cast<const void *>(&key)),
+                                             const_cast<void *>(static_cast<const void *>(&value)))) {
+                    throw std::runtime_error("Failed to add key-value pair to dictionary");
+                                             }
             }
         }
 
-        /**
-         * @brief 获取值
-         * @throws std::out_of_range 如果键不存在
-         */
         Value Get(const Key &key) const {
-            Value value;
-            if (!patchlib_dictionary_get_value(handle_,
-                                               const_cast<void *>(static_cast<const void *>(&key)),
-                                               &value)) {
-                throw std::out_of_range("Key not found in dictionary");
+            if constexpr (std::is_same_v<Key, Handle> || std::is_same_v<Value, Handle>) {
+                patch_handle_t kRaw;
+                const void *kPtr = &key;
+                if constexpr (std::is_same_v<Key, Handle>) { kRaw = key.Raw(); kPtr = &kRaw; }
+
+                if constexpr (std::is_same_v<Value, Handle>) {
+                    patch_handle_t vRaw = nullptr;
+                    if (!patchlib_dictionary_get_value(_value, const_cast<void *>(kPtr), &vRaw)) {
+                        throw std::out_of_range("Key not found in dictionary");
+                    }
+                    return Handle(vRaw, true);
+                } else {
+                    Value value;
+                    if (!patchlib_dictionary_get_value(_value, const_cast<void *>(kPtr), &value)) {
+                        throw std::out_of_range("Key not found in dictionary");
+                    }
+                    return value;
+                }
+            } else {
+                Value value;
+                if (!patchlib_dictionary_get_value(_value,
+                                                   const_cast<void *>(static_cast<const void *>(&key)),
+                                                   &value)) {
+                    throw std::out_of_range("Key not found in dictionary");
+                                                   }
+                return value;
             }
-            return value;
         }
 
-        /**
-         * @brief 尝试获取值
-         * @return 是否找到
-         */
         bool TryGet(const Key &key, Value &outValue) const {
-            return patchlib_dictionary_get_value(handle_,
-                                                 const_cast<void *>(static_cast<const void *>(&key)),
-                                                 &outValue);
-        }
+            if constexpr (std::is_same_v<Key, Handle> || std::is_same_v<Value, Handle>) {
+                patch_handle_t kRaw;
+                const void *kPtr = &key;
+                if constexpr (std::is_same_v<Key, Handle>) { kRaw = key.Raw(); kPtr = &kRaw; }
 
-        /**
-         * @brief 设置值（如果键存在则修改，否则添加）
-         */
-        void Set(const Key &key, const Value &value) {
-            if (!patchlib_dictionary_set_value(handle_,
-                                               const_cast<void *>(static_cast<const void *>(&key)),
-                                               const_cast<void *>(static_cast<const void *>(&value)))) {
-                throw std::runtime_error("Failed to set value in dictionary");
+                if constexpr (std::is_same_v<Value, Handle>) {
+                    patch_handle_t vRaw = nullptr;
+                    if (!patchlib_dictionary_get_value(_value, const_cast<void *>(kPtr), &vRaw)) {
+                        return false;
+                    }
+                    outValue = Handle(vRaw, true);
+                    return true;
+                } else {
+                    return patchlib_dictionary_get_value(_value, const_cast<void *>(kPtr), &outValue);
+                }
+            } else {
+                return patchlib_dictionary_get_value(_value,
+                                                     const_cast<void *>(static_cast<const void *>(&key)),
+                                                     &outValue);
             }
         }
 
-        /**
-         * @brief 移除键值对
-         * @return 是否成功移除
-         */
-        bool Remove(const Key &key) {
-            return patchlib_dictionary_remove(handle_,
-                                              const_cast<void *>(static_cast<const void *>(&key)));
+        void Set(const Key &key, const Value &value) {
+            patch_handle_t kRaw;
+            patch_handle_t vRaw;
+            const void *kPtr = &key;
+            const void *vPtr = &value;
+
+            if constexpr (std::is_same_v<Key, Handle>) {
+                kRaw = key.Raw();
+                kPtr = &kRaw;
+            }
+            if constexpr (std::is_same_v<Value, Handle>) {
+                vRaw = value.Raw();
+                vPtr = &vRaw;
+            }
+
+            if (!patchlib_dictionary_set_value(_value,
+                                               const_cast<void *>(kPtr),
+                                               const_cast<void *>(vPtr))) {
+                throw std::runtime_error("Failed to set value in dictionary");
+                                               }
         }
 
-        /**
-         * @brief 清空字典
-         */
+        bool Remove(const Key &key) {
+            patch_handle_t kRaw;
+            const void *kPtr = &key;
+
+            if constexpr (std::is_same_v<Key, Handle>) {
+                kRaw = key.Raw();
+                kPtr = &kRaw;
+            }
+
+            return patchlib_dictionary_remove(_value, const_cast<void *>(kPtr));
+        }
+
         void Clear() const {
-            if (!patchlib_dictionary_clear(handle_)) {
+            if (!patchlib_dictionary_clear(_value)) {
                 throw std::runtime_error("Failed to clear dictionary");
             }
         }
 
-        /**
-         * @brief 索引操作符（获取值）
-         */
-        Value operator[](const Key &key) const {
-            return get(key);
-        }
+        Value operator[](const Key &key) const { return Get(key); }
 
-        /**
-         * @brief 索引操作符（设置值）
-         */
-        Value &operator[](const Key &key) {
-            // 注意：这个实现比较简化，实际应该返回引用
-            // 但由于C API限制，我们使用临时值
-            static Value temp;
-            try {
-                temp = get(key);
-            } catch (const std::out_of_range &) {
-                // 键不存在，添加默认值
-                Value defaultVal{};
-                add(key, defaultVal);
+        // 非 const 版本对 Handle 不提供引用
+        template<typename V = Value>
+        std::enable_if_t<!std::is_same_v<V, Handle>, V &> operator[](const Key &key) {
+            static V temp;
+            try { temp = Get(key); }
+            catch (const std::out_of_range &) {
+                V defaultVal{};
+                Add(key, defaultVal);
                 temp = defaultVal;
             }
             return temp;
         }
 
         // ==================== 容量 ====================
-
-        /**
-         * @brief 获取长度
-         */
-        [[nodiscard]] size_t Length() const {
-            return patchlib_dictionary_length(handle_);
-        }
-
-        /**
-         * @brief 判断是否为空
-         */
-        [[nodiscard]] bool Empty() const {
-            return Length() == 0;
-        }
-
-        /**
-         * @brief 获取大小（同length）
-         */
-        [[nodiscard]] size_t size() const {
-            return Length();
-        }
-
-        // ==================== 转换 ====================
-
-        /**
-         * @brief 转换为std::unordered_map
-         * @note 需要遍历所有键值对，效率较低
-         */
-        /*
-        std::unordered_map<Key, Value> toStdMap() const {
-            std::unordered_map<Key, Value> result;
-            // 注意：C API没有提供遍历字典的方法
-            // 这里需要根据实际API实现遍历
-            // 暂时返回空map
-            return result;
-        }
-        */
+        [[nodiscard]] size_t Length() const { return patchlib_dictionary_length(_value); }
+        [[nodiscard]] bool Empty() const { return Length() == 0; }
+        [[nodiscard]] size_t size() const { return Length(); }
 
         // ==================== 运算符 ====================
-
-        explicit operator bool() const {
-            return IsValid();
-        }
+        explicit operator bool() const { return IsValid(); }
 
         bool operator==(const Dictionary &other) const {
-            // 比较字典内容
             if (Length() != other.Length()) return false;
-            // 需要遍历比较所有键值对
-            // 这里简化处理，只比较句柄
-            return handle_ == other.handle_;
+            return _value == other._value;
         }
 
-        bool operator!=(const Dictionary &other) const {
-            return !(*this == other);
-        }
+        bool operator!=(const Dictionary &other) const { return !(*this == other); }
 
     private:
-        static patch_type_t getKeyPatchType() {
+        // 把 Key / Value 转成 void* 供 C API 读
+        template<typename T>
+        static void *AsVoidPtr(const T &value) {
+            if constexpr (std::is_same_v<T, Handle>) {
+                // 必须把裸指针放到一个变量里，不能取临时地址
+                // 这里用 thread_local 静态存储避免悬空
+                thread_local patch_handle_t raw;
+                raw = value.Raw();
+                return &raw;
+            } else {
+                return const_cast<void *>(static_cast<const void *>(&value));
+            }
+        }
+
+        static patch_type_t GetKeyPatchType() {
             if constexpr (std::is_same_v<Key, void>) return PATCH_VOID;
             else if constexpr (std::is_same_v<Key, int8_t>) return PATCH_INT8;
             else if constexpr (std::is_same_v<Key, int16_t>) return PATCH_INT16;
@@ -350,7 +277,7 @@ namespace TEFKernel::PatchLib::Struct {
             else return PATCH_OBJECT;
         }
 
-        static patch_type_t getValuePatchType() {
+        static patch_type_t GetValuePatchType() {
             if constexpr (std::is_same_v<Value, void>) return PATCH_VOID;
             else if constexpr (std::is_same_v<Value, int8_t>) return PATCH_INT8;
             else if constexpr (std::is_same_v<Value, int16_t>) return PATCH_INT16;
@@ -366,8 +293,5 @@ namespace TEFKernel::PatchLib::Struct {
             else if constexpr (std::is_same_v<Value, char>) return PATCH_CHAR;
             else return PATCH_OBJECT;
         }
-
-        patch_handle_t handle_;
-        bool ownsHandle_;
     };
 }
